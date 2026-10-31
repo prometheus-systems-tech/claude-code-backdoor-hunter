@@ -30,7 +30,7 @@ Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some
 5. Running processes (reverse SSH tunnels)
 6. Active network connections to the C2 IP
 7. Local SSH service and recent logins (journal, `auth.log`, `secure`)
-8. System logs for the C2 IP
+8. System logs for the C2 IP. Each hit is triaged: searches for the IP (`grep`, `journalctl`, this tool) and browser URL errors are ignored, sshd activity, firewall `SRC=`/`DST=` entries and tunnel command lines are flagged `[!]`, and anything else is listed for review `[?]`
 
 The checks match published indicators (Cursor security notice, 30 October 2026): SHA-256 hashes of the trojanized `extension.js` and VSIX files (2.1.312 and 2.1.313 from Cursor's marketplace), the attacker public key and its label, the dropped files `~/.config/.smt`, `~/.config/.smtk`, `.stk_*` and `com.apple.sysmond.plist`, and the tunnel command line. Version 2.1.312 is only malicious when it came from Cursor's marketplace, so it is flagged for review unless its hash matches.
 

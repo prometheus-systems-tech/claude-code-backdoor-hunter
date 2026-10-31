@@ -375,10 +375,15 @@ echo
 progress 3
 echo "== 4. Shell history =="
 hist_hits=0
+# Ignore history lines where the IP or label was only being searched for (grep, journalctl, this script, ...)
+_hist_benign_re='^(: [0-9]+:[0-9]+;)?[[:space:]]*(sudo[[:space:]]+)?([^[:space:]]*/)?(grep|egrep|fgrep|zgrep|rg|ag|journalctl|ausearch|less|cat|tail|head|claude-code-backdoor-hunter|check_claude_code_backdoor)'
 for hf in "$HOME"/.bash_history "$HOME"/.zsh_history "$HOME"/.local/share/fish/fish_history \
           "$HOME"/.history "$HOME"/.sh_history; do
-  if [ -f "$hf" ] && grep -qE "$C2_IP|$KEY_LABEL" "$hf" 2>/dev/null; then
-    warn "C2 IP or key label in $hf"
+  [ -f "$hf" ] || continue
+  _hh=$(grep -aE "$C2_IP|$KEY_LABEL" "$hf" 2>/dev/null | grep -avE "$_hist_benign_re")
+  if [ -n "$_hh" ]; then
+    warn "C2 IP or key label in $hf:"
+    echo "$_hh" | head -n 5 | cut -c1-200 | sed 's/^/    /'
     hist_hits=1
   fi
 done
@@ -471,21 +476,44 @@ fi
 echo
 progress 7
 echo "== 8. System logs for the C2 IP =="
-if have journalctl; then
-  if journalctl --since "$SINCE" --no-pager 2>/dev/null | grep -q "$C2_IP"; then
-    warn "System journal mentions $C2_IP since $SINCE."
+# A log line that merely contains the IP is not proof of contact. Classify each hit:
+#   benign: someone searching for the IP (sudo running grep/journalctl/etc., this script) or a
+#           browser/Electron error whose URL happens to contain it
+#   strong: sshd activity, firewall SRC=/DST=, tunnel@IP, an ssh -R tunnel or .smt persistence
+#   other : anything else, flagged for review only
+# Reads matching lines from stdin (via heredoc, so warn/note run in this shell).
+triage_c2_lines() {
+  _src=$1
+  _all=$(cat)
+  [ -n "$_all" ] || { ok "No mentions of $C2_IP in $_src."; return 0; }
+  _benign_re='COMMAND=([^ ]*/)?(grep|egrep|fgrep|zgrep|rg|ag|journalctl|ausearch|less|cat|tail|head|claude-code-backdoor-hunter|check_claude_code_backdoor)|Failed to load URL|syndicatedsearch\.goog|net::ERR_'
+  _strong_re="sshd.*(Accepted|Connection (from|closed)|Failed|Invalid user|Disconnected from).*$C2_IP|$C2_IP.*sshd|SRC=$C2_IP|DST=$C2_IP|tunnel@$C2_IP|-R ?'?\*:0:localhost:22|\.config/\.smt"
+  _rest=$(printf '%s\n' "$_all" | grep -Ev "$_benign_re")
+  _ign=$(printf '%s\n' "$_all" | grep -Ec "$_benign_re")
+  _strong=""
+  [ -n "$_rest" ] && _strong=$(printf '%s\n' "$_rest" | grep -E "$_strong_re")
+  if [ -n "$_strong" ]; then
+    warn "Log entries in $_src show activity involving $C2_IP:"
+    printf '%s\n' "$_strong" | head -n 5 | cut -c1-220 | sed 's/^/    /'
+  elif [ -n "$_rest" ]; then
+    note "Log entries in $_src mention $C2_IP but show no connection activity, review:"
+    printf '%s\n' "$_rest" | head -n 5 | cut -c1-220 | sed 's/^/    /'
   else
-    ok "No journal mentions of $C2_IP (journal may need sudo to be complete)."
+    ok "No contact with $C2_IP in $_src ($_ign line(s) were only searches for it or browser URL errors)."
   fi
+}
+
+if have journalctl; then
+  triage_c2_lines "the system journal since $SINCE" <<EOF_J
+$(journalctl --since "$SINCE" --no-pager 2>/dev/null | grep -F "$C2_IP")
+EOF_J
 elif [ "$IS_MAC" -eq 1 ] && have log; then
   # unified log; this can take a while. The header line echoes the predicate, so filter it out.
-  if tmo 180 log show --start "$SINCE" --style compact \
+  triage_c2_lines "the unified log since $SINCE" <<EOF_M
+$(tmo 180 log show --start "$SINCE" --style compact \
        --predicate "eventMessage CONTAINS \"$C2_IP\"" 2>/dev/null \
-       | grep -v 'Filtering the log data' | grep -q "$C2_IP"; then
-    warn "Unified log mentions $C2_IP since $SINCE."
-  else
-    ok "No unified log mentions of $C2_IP (log may need sudo to be complete)."
-  fi
+       | grep -v 'Filtering the log data' | grep -F "$C2_IP")
+EOF_M
 else
   echo "    (journalctl not available, relying on classic log files)"
 fi
@@ -496,11 +524,9 @@ for lf in /var/log/auth.log /var/log/secure /var/log/syslog /var/log/messages /v
 done
 if [ -n "$logfiles" ]; then
   # shellcheck disable=SC2086
-  if grep -qs "$C2_IP" $logfiles; then
-    warn "Log files mention $C2_IP:$logfiles"
-  else
-    ok "No mentions of $C2_IP in$logfiles."
-  fi
+  triage_c2_lines "$logfiles" <<EOF_L
+$(grep -hsF "$C2_IP" $logfiles)
+EOF_L
 elif [ "$IS_MAC" -ne 1 ]; then
   note "No readable classic log files (run with sudo for a complete check)."
 fi
