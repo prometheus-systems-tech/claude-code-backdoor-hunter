@@ -1,4 +1,5 @@
 #!/bin/sh
+# Copyright (c) 2026 Ross WD Cameron <rwd.cameron@prometheus-systems.co.za>
 # Read-only check for the trojanized anthropic.claude-code 2.1.313 (Cursor marketplace)
 # SSH backdoor, disclosed 30 Oct 2026. Makes no changes to the system.
 #
@@ -8,6 +9,8 @@
 C2_IP="134.209.82.225"
 KEY_LABEL="svc-telemetry"
 BAD_VER="2.1.313"
+BAD_VER2="2.1.312"      # malicious only as served by Cursor's marketplace; the Open-VSX 2.1.312 is clean
+KEY_BLOB="AAAAC3NzaC1lZDI1NTE5AAAAIDdvylCEJ/k2TpezcTfedrkHyFSK9IZ3vmP6vhY4Ss0P"   # attacker public key (fingerprint SHA256:0Z6R+DF64Do2nwQic8a7kkfDLNNk4IiK+2U2Rci4htk)
 SINCE="2026-10-29"      # install window began 29 Oct 2026
 found=0
 review=0
@@ -16,6 +19,39 @@ warn() { echo "[!] $*"; found=1; }
 note() { echo "[?] $*"; review=1; }
 ok()   { echo "[ok] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Known-bad SHA-256 values (Cursor security notice 30 Oct 2026, StepSecurity, OpenSourceMalware, Corgea).
+ioc_hash_name() {
+  case "$1" in
+    ecb58cb29078d9646ad1dcdbe51526f2d9cfea06be5fb2ab183e8ecc3ab6bf15) echo "trojanized extension.js (2.1.312/2.1.313)" ;;
+    fcbb327e38e61c4fec795e0d0591f52cd1014b813d20a5912104953c3a17c364) echo "malicious VSIX 2.1.312 darwin-arm64" ;;
+    3de1722901165769893bef57c72594e9a54459faa23f3091b136b79966edd081) echo "malicious VSIX 2.1.312 win32-x64" ;;
+    80402fdcad8799285fd93044976973ca000da7995fb93363f819bb8e4f84ee6c) echo "malicious VSIX 2.1.313 darwin-arm64" ;;
+    6786ec90cbd45949695bd7805c9fbb26cfc91bc5fc897de0183d9bcb9cb21731) echo "malicious VSIX 2.1.313 win32-x64" ;;
+    432ccdee3801f99e52b8fe31f69ea9870118e96ea7ef9ecabed1479621b5ab62) echo "malicious VSIX (reported by Corgea)" ;;
+    7e0a52885fadee05544a9e99eb18c792bec05900a5e1a66d68f8383decb0e278) echo "dropped reverse-tunnel private key" ;;
+    22f682d9ff55264e934d0f43fcfbb46d58be5cfb8fe1b3a7cbb38fe089c818b0) echo "dropped smt.cmd persistence script" ;;
+  esac
+}
+
+sha256_of() {
+  [ -f "$1" ] || return 1
+  if have sha256sum; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif have shasum; then shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  elif have sha256; then sha256 -q "$1" 2>/dev/null
+  elif have openssl; then openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
+  fi
+}
+
+# Returns 0 and prints a warning when the file's hash is a known IOC.
+check_hash() {
+  _h=$(sha256_of "$1")
+  [ -n "$_h" ] || return 1
+  _n=$(ioc_hash_name "$_h")
+  [ -n "$_n" ] || return 1
+  warn "Known-malicious file hash ($_n): $1"
+  return 0
+}
 
 # timeout(1) is not POSIX; run without it when missing.
 if have timeout; then
@@ -122,9 +158,11 @@ else
   while IFS= read -r d; do
     [ -z "$d" ] && continue
     case "$d" in
-      *"$BAD_VER"*) warn "Malicious version installed: $d" ;;
-      *)            note "Extension present (not $BAD_VER), confirm it was never $BAD_VER: $d" ;;
+      *"$BAD_VER"*)  warn "Malicious version installed: $d" ;;
+      *"$BAD_VER2"*) note "Extension $BAD_VER2 present: malicious only if from Cursor's marketplace, check the hash result below: $d" ;;
+      *)             note "Extension present (not $BAD_VER), confirm it was never $BAD_VER: $d" ;;
     esac
+    check_hash "$d/extension.js"
     if tmo 20 grep -rIqs "$C2_IP" "$d" 2>/dev/null; then
       warn "C2 IP found inside extension files: $d"
     fi
@@ -161,9 +199,11 @@ fi
 echo
 echo "-- Package managers (the malicious item is the extension $BAD_VER, not the app itself) --"
 pm_check() {
-  if [ -n "$2" ]; then
+  # Ignore this tool's own package (its name contains "claude-code")
+  _pm=$(printf '%s\n' "$2" | grep -v 'claude-code-backdoor-hunter')
+  if [ -n "$_pm" ]; then
     note "$1 install found, confirm the extension version separately:"
-    echo "$2" | sed 's/^/    /'
+    echo "$_pm" | sed 's/^/    /'
   fi
 }
 have dpkg    && pm_check "dpkg/apt"    "$(dpkg -l 2>/dev/null | grep -iE '^ii +(cursor|claude-code|anysphere)')"
@@ -227,10 +267,12 @@ vsix=$(tmo 30 find "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/.c
 if [ -n "$vsix" ]; then
   while IFS= read -r v; do
     [ -z "$v" ] && continue
-    case "$v" in
-      *"$BAD_VER"*) warn "Malicious VSIX file: $v" ;;
-      *)            note "VSIX file (check its version): $v" ;;
-    esac
+    if check_hash "$v"; then :; else
+      case "$v" in
+        *"$BAD_VER"*) warn "Malicious VSIX file: $v" ;;
+        *)            note "VSIX file (check its version): $v" ;;
+      esac
+    fi
   done <<EOF_VSIX
 $vsix
 EOF_VSIX
@@ -256,6 +298,9 @@ for kf in "$@"; do
   if grep -n "$KEY_LABEL" "$kf"; then
     warn "Key labelled '$KEY_LABEL' in $kf"
   fi
+  if grep -qF "$KEY_BLOB" "$kf" 2>/dev/null; then
+    warn "Attacker public key material (fingerprint SHA256:0Z6R+DF6...) in $kf"
+  fi
   if [ -n "$(find "$kf" -newermt "$SINCE" 2>/dev/null)" ]; then
     note "$kf modified since $SINCE. Review its keys:"
   fi
@@ -272,7 +317,7 @@ done
 echo
 progress 2
 echo "== 3. Persistence: cron, systemd, autostart, shell profiles =="
-if crontab -l 2>/dev/null | grep -E "$C2_IP|$KEY_LABEL"; then
+if crontab -l 2>/dev/null | grep -E "$C2_IP|$KEY_LABEL|\.config/\.smt"; then
   warn "User crontab references the C2 IP or key label."
 else
   ok "User crontab clean."
@@ -306,6 +351,17 @@ if [ -n "$hits" ]; then
 else
   ok "No persistence files reference the C2 IP or key label."
 fi
+# Known dropped artefacts (reverse-tunnel script and key, fake LaunchAgent)
+art=0
+for pf in "$HOME/.config/.smt" "$HOME/.config/.smtk" \
+          "$HOME/Library/LaunchAgents/com.apple.sysmond.plist" \
+          "${TMPDIR:-/tmp}"/.stk_* /tmp/.stk_* /var/tmp/.stk_*; do
+  [ -e "$pf" ] || continue
+  art=1
+  warn "Known malware artefact present: $pf"
+  check_hash "$pf"
+done
+[ "$art" -eq 0 ] && ok "No known dropped artefacts (.smt, .smtk, .stk_*, com.apple.sysmond.plist)."
 recent=$(tmo 30 find "$HOME/.config/systemd" "$HOME/.config/autostart" "$HOME/.local/bin" \
   "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons \
   /etc/cron.d /etc/systemd/system -type f -newermt "$SINCE" 2>/dev/null | head -n 20)
@@ -333,7 +389,7 @@ echo
 progress 4
 echo "== 5. Running processes (reverse tunnels) =="
 allprocs=$(ps -axww -o pid,user,args 2>/dev/null || ps -ef 2>/dev/null)
-procs=$(echo "$allprocs" | grep -E "$C2_IP|ssh[^|]* -[A-Za-z]*R ?[0-9]+:" | grep -v grep)
+procs=$(echo "$allprocs" | grep -E "$C2_IP|ssh[^|]* -[A-Za-z]*R ?[0-9]+:|-R ?'?\*:0:localhost:22|\.config/\.smt|\.stk_[0-9a-f]{10}" | grep -v grep)
 if [ -n "$procs" ]; then
   warn "Suspicious process(es):"
   echo "$procs" | sed 's/^/    /'

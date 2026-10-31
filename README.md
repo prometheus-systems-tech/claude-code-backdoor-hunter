@@ -32,6 +32,8 @@ Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some
 7. Local SSH service and recent logins (journal, `auth.log`, `secure`)
 8. System logs for the C2 IP
 
+The checks match published indicators (Cursor security notice, 30 October 2026): SHA-256 hashes of the trojanized `extension.js` and VSIX files (2.1.312 and 2.1.313 from Cursor's marketplace), the attacker public key and its label, the dropped files `~/.config/.smt`, `~/.config/.smtk`, `.stk_*` and `com.apple.sysmond.plist`, and the tunnel command line. Version 2.1.312 is only malicious when it came from Cursor's marketplace, so it is flagged for review unless its hash matches.
+
 ## GUI (optional)
 
 `check_claude_code_backdoor_gui.py` is a GTK 4 front end that runs the script, streams the output with colour coding, shows progress and the final result, and can save a report. All detection logic stays in the shell script.
@@ -50,6 +52,21 @@ Dependencies (GTK 4.8 or newer, Python 3):
 - RHEL 9+: `sudo dnf install python3-gobject gtk4`
 - FreeBSD: `pkg install gtk4 py311-gobject3` (match the package prefix to your Python version)
 - macOS: `brew install pygobject3 gtk4`
+
+## Native packages
+
+```bash
+make native
+```
+
+Builds a package for the host OS into `dist/`:
+
+- Debian and Ubuntu: `.deb` (needs `dpkg-deb`)
+- RHEL 9+ and compatibles: `.rpm` (needs `rpm-build`)
+- FreeBSD: `pkg` package (use `gmake native`)
+- macOS: `.pkg` (needs `pkgbuild`)
+
+The package installs `claude-code-backdoor-hunter` and `claude-code-backdoor-hunter-gui` into the path, plus a desktop entry and icon. Use `make deb`, `make rpm`, `make freebsd` or `make macos` to target one explicitly, and `make clean` to remove build output.
 
 ## Exit codes
 
@@ -71,4 +88,5 @@ Dependencies (GTK 4.8 or newer, Python 3):
 ---
 
 *Document version: v1.0.0 — last reviewed 2026-10-31*
+*© 2026 Ross WD Cameron <rwd.cameron@prometheus-systems.co.za>.*
 *Licensed under the GNU General Public License, version 2. See [LICENSE](LICENSE).*

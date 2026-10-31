@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Code Backdoor Hunter
+Comment=Read-only check for the trojanized anthropic.claude-code extension
+Exec=claude-code-backdoor-hunter-gui
+Icon=org.backdoorhunter.Gui
+Terminal=false
+Categories=System;Security;
+Keywords=security;backdoor;ssh;claude;cursor;
+StartupNotify=true

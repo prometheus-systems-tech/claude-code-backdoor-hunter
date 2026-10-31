@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Ross WD Cameron <rwd.cameron@prometheus-systems.co.za>
 """GTK 4 front end for check_claude_code_backdoor.sh.
 
 Runs the read-only checker, streams its output into a window and shows the
@@ -15,7 +16,7 @@ import threading
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 APP_ID = "org.backdoorhunter.Gui"
 SCRIPT = os.path.join(
@@ -33,6 +34,7 @@ RESULTS = {
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Claude Code Backdoor Hunter")
+        self.set_icon_name(APP_ID)
         self.set_default_size(900, 650)
         self.proc = None
         self.running = False
@@ -220,6 +222,9 @@ class MainWindow(Gtk.ApplicationWindow):
 class App(Gtk.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID)
+        # Lets the icon resolve when run from a source checkout
+        theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        theme.add_search_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "packaging"))
 
     def do_activate(self):
         win = self.props.active_window or MainWindow(self)
