@@ -26,9 +26,19 @@ progress() {
 
 shopt -s nullglob
 
-# Distro detection (supported: Debian 12+ and the RHEL 9+ family; others run best-effort)
+# OS detection (supported: Debian 12+, the RHEL 9+ family and FreeBSD 14+; others run best-effort)
 DISTRO_FAMILY="other"
-if [ -r /etc/os-release ]; then
+IS_BSD=0
+if [ "$(uname -s 2>/dev/null)" = "FreeBSD" ]; then
+  DISTRO_FAMILY="freebsd"
+  IS_BSD=1
+  _fbsd="$(freebsd-version -u 2>/dev/null || uname -r)"
+  _major="${_fbsd%%.*}"
+  if [ "${_major:-0}" -lt 14 ] 2>/dev/null; then
+    echo "[?] FreeBSD $_fbsd is older than the supported FreeBSD 14+."
+  fi
+  echo "Detected: FreeBSD $_fbsd (family: $DISTRO_FAMILY)"
+elif [ -r /etc/os-release ]; then
   # shellcheck disable=SC1091
   . /etc/os-release
   _ids=" ${ID:-} ${ID_LIKE:-} "
@@ -48,7 +58,12 @@ if [ -r /etc/os-release ]; then
   echo "Detected: ${PRETTY_NAME:-unknown} (family: $DISTRO_FAMILY)"
 fi
 
-# Auth log files (Debian: auth.log, RHEL: secure). Debian 12 may have no file at all, only the journal.
+# BSD grep has no --max-filesize; only pass it when GNU grep supports it.
+GREP_MAX1=(); GREP_MAX5=()
+echo x | grep -q --max-filesize=1M y 2>/dev/null
+if [ $? -eq 1 ]; then GREP_MAX1=(--max-filesize=1M); GREP_MAX5=(--max-filesize=5M); fi
+
+# Auth log files (Debian: auth.log, RHEL: secure, FreeBSD: auth.log). Debian 12 may have no file at all, only the journal.
 AUTH_LOGS=()
 for al in /var/log/auth.log /var/log/secure; do [ -r "$al" ] && AUTH_LOGS+=("$al"); done
 
@@ -59,6 +74,7 @@ roots=(
   "$HOME/.cursor" "$HOME/.cursor-server" "$HOME/.config/Cursor"
   "$HOME/.vscode" "$HOME/.vscode-insiders" "$HOME/.vscode-oss" "$HOME/.vscodium"
   "$HOME/.vscode-server" "$HOME/.var/app" "$HOME/snap"
+  "$HOME/.cursor-linux" /compat/linux/root/.cursor
 )
 existing=()
 for r in "${roots[@]}"; do [ -d "$r" ] && existing+=("$r"); done
@@ -95,7 +111,7 @@ for l in "$HOME/.config/Cursor/logs" "$HOME/.config/Code/logs" "$HOME/.cursor/lo
   [ -d "$l" ] && logs+=("$l")
 done
 if [ ${#logs[@]} -gt 0 ]; then
-  hits=$(timeout 30 grep -rIlE --max-filesize=5M \
+  hits=$(timeout 30 grep "${GREP_MAX5[@]}" -rIlE \
     "claude-code[^[:space:]]*$BAD_VER|$BAD_VER[^[:space:]]*claude-code" "${logs[@]}" 2>/dev/null | head -5)
   if [ -n "$hits" ]; then
     warn "Editor logs mention claude-code $BAD_VER:"
@@ -114,6 +130,7 @@ pm_check() {
   fi
 }
 have dpkg    && pm_check "dpkg/apt"   "$(dpkg -l 2>/dev/null | grep -iE '^ii +(cursor|claude-code|anysphere)')"
+have pkg     && pm_check "FreeBSD pkg" "$(pkg info 2>/dev/null | grep -iE '^(cursor|claude-code|anysphere|vscode|code-oss|vscodium)')"
 have rpm     && pm_check "rpm/dnf"    "$(rpm -qa 2>/dev/null | grep -iE '^(cursor|claude-code|anysphere)')"
 have dnf     && pm_check "dnf history" "$(timeout 20 dnf -q history list 2>/dev/null | grep -iE 'cursor|claude-code|anysphere')"
 have pacman  && pm_check "pacman/AUR" "$(pacman -Q 2>/dev/null | grep -iE '^(cursor|claude-code)')"
@@ -127,7 +144,7 @@ have pnpm    && pm_check "pnpm global" "$(pnpm ls -g --depth=0 2>/dev/null | gre
 echo "-- AppImage, tarball and manual installs --"
 manual=$(timeout 40 find "$HOME/Applications" "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" \
   "$HOME/bin" "$HOME/opt" "$HOME/.local/bin" "$HOME/.local/opt" "$HOME/.local/share/appimagekit" \
-  /opt /usr/local /tmp /var/tmp /mnt /media -maxdepth 4 \
+  /opt /usr/local /compat/linux/opt /tmp /var/tmp /mnt /media -maxdepth 4 \
   \( -iname '*cursor*.appimage' -o -iname 'cursor*.tar*' -o -iname 'cursor*.tgz' -o -iname 'cursor*.zip' \
      -o \( -iname 'cursor*' \( -type d -o -type f -perm -u+x \) \) \) 2>/dev/null | head -20)
 if [ -n "$manual" ]; then
@@ -151,7 +168,7 @@ fi
 if have cursor; then
   note "cursor on PATH: $(readlink -f "$(command -v cursor)")"
 fi
-for df in /usr/share/applications/*cursor*.desktop "$HOME"/.local/share/applications/*cursor*.desktop \
+for df in /usr/share/applications/*cursor*.desktop /usr/local/share/applications/*cursor*.desktop "$HOME"/.local/share/applications/*cursor*.desktop \
           /var/lib/flatpak/exports/share/applications/*ursor*.desktop "$HOME"/.local/share/flatpak/exports/share/applications/*ursor*.desktop; do
   note "Desktop entry $df -> $(grep -m1 '^Exec=' "$df" 2>/dev/null)"
 done
@@ -209,12 +226,14 @@ persist_paths=(
   /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly /etc/crontab
   /etc/systemd/system /etc/systemd/user "$HOME/.bashrc.d"
   /var/spool/cron /var/spool/cron/crontabs   # RHEL: /var/spool/cron, Debian: /var/spool/cron/crontabs
+  /var/cron/tabs /usr/local/etc/cron.d /etc/rc.conf /etc/rc.conf.d /etc/rc.local.d   # FreeBSD
+  /usr/local/etc/rc.d /etc/periodic /usr/local/etc/periodic /etc/csh.cshrc /etc/csh.login "$HOME/.cshrc" "$HOME/.login" "$HOME/.shrc" "$HOME/.tcshrc"
   /etc/profile.d /etc/profile /etc/bashrc /etc/bash.bashrc /etc/rc.local /etc/rc.d/rc.local
   /etc/ssh/sshd_config /etc/ssh/sshd_config.d
 )
 scan=()
 for p in "${persist_paths[@]}"; do [ -e "$p" ] && [ -r "$p" ] && scan+=("$p"); done
-hits=$(timeout 60 grep -rIlE --max-filesize=1M "$C2_IP|$KEY_LABEL" "${scan[@]}" 2>/dev/null)
+hits=$(timeout 60 grep "${GREP_MAX1[@]}" -rIlE "$C2_IP|$KEY_LABEL" "${scan[@]}" 2>/dev/null)
 if [ -n "$hits" ]; then
   warn "Persistence files reference the C2 IP or key label:"
   echo "$hits" | sed 's/^/    /'
@@ -233,7 +252,8 @@ echo
 progress 3
 echo "== 4. Shell history =="
 hist_hits=0
-for hf in "$HOME"/.bash_history "$HOME"/.zsh_history "$HOME"/.local/share/fish/fish_history; do
+for hf in "$HOME"/.bash_history "$HOME"/.zsh_history "$HOME"/.local/share/fish/fish_history \
+          "$HOME"/.history "$HOME"/.sh_history; do
   [ -f "$hf" ] && grep -qE "$C2_IP|$KEY_LABEL" "$hf" && { warn "C2 IP or key label in $hf"; hist_hits=1; }
 done
 [ $hist_hits -eq 0 ] && ok "No references in shell history." || true
@@ -242,7 +262,7 @@ done
 echo
 progress 4
 echo "== 5. Running processes (reverse tunnels) =="
-procs=$(ps -eo pid,user,args 2>/dev/null | grep -E "$C2_IP|ssh[^|]* -[A-Za-z]*R ?[0-9]+:" | grep -v grep)
+procs=$(ps -axww -o pid,user,args 2>/dev/null | grep -E "$C2_IP|ssh[^|]* -[A-Za-z]*R ?[0-9]+:" | grep -v grep)
 if [ -n "$procs" ]; then
   warn "Suspicious process(es):"
   echo "$procs" | sed 's/^/    /'
@@ -254,7 +274,15 @@ fi
 echo
 progress 5
 echo "== 6. Network connections =="
-if command -v ss >/dev/null 2>&1; then
+if [ "$IS_BSD" -eq 1 ]; then
+  conns="$(sockstat -c 2>/dev/null; netstat -an -p tcp 2>/dev/null)"
+  if echo "$conns" | grep -q "$C2_IP"; then
+    warn "Active connection to $C2_IP"
+    echo "$conns" | grep "$C2_IP" | sed 's/^/    /'
+  else
+    ok "No active connection to $C2_IP."
+  fi
+elif command -v ss >/dev/null 2>&1; then
   if ss -tn 2>/dev/null | grep -q "$C2_IP"; then
     warn "Active connection to $C2_IP"
     ss -tnp 2>/dev/null | grep "$C2_IP" | sed 's/^/    /'
@@ -276,7 +304,8 @@ fi
 echo
 progress 6
 echo "== 7. Local SSH service and recent logins =="
-if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null \
+   || { [ "$IS_BSD" -eq 1 ] && service sshd onestatus >/dev/null 2>&1; }; then
   note "sshd is running. Confirm this is intentional."
 else
   ok "sshd not running."
@@ -307,7 +336,7 @@ if command -v journalctl >/dev/null 2>&1; then
     ok "No journal mentions of $C2_IP (journal may need sudo to be complete)."
   fi
 else
-  note "journalctl not available, log check skipped."
+  echo "    (journalctl not available, relying on classic log files)"
 fi
 # Classic log files (RHEL: secure, messages; Debian: auth.log, syslog), if readable
 logfiles=()
