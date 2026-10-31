@@ -1,3 +1,5 @@
+<p align="center"><img src="packaging/logo.png" alt="Claude Code Backdoor Hunter logo" width="160"></p>
+
 # Claude Code Backdoor Hunter
 
 *Read-only checker for the trojanized `anthropic.claude-code` 2.1.313 extension (Cursor marketplace)*
