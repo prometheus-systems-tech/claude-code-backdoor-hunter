@@ -2,7 +2,7 @@
 # Read-only check for the trojanized anthropic.claude-code 2.1.313 (Cursor marketplace)
 # SSH backdoor, disclosed 30 Oct 2026. Makes no changes to the system.
 #
-# POSIX sh script (no bashisms). Supported: Debian 12+, RHEL 9+ family, FreeBSD 14+, macOS 12+.
+# POSIX sh script (no bashisms). Supported: Debian 12+, Ubuntu 24.04+, RHEL 9+ family, FreeBSD 14+, macOS 12+.
 # Exit codes: 0 = no indicators, 1 = indicators found, 2 = nothing definite, items need review.
 
 C2_IP="134.209.82.225"
@@ -40,7 +40,7 @@ progress() {
   printf '[%s] %d/%d (%d%%)\n' "$_bar" "$_step" "$TOTAL" "$(( _step * 100 / TOTAL ))"
 }
 
-# OS detection (supported: Debian 12+, the RHEL 9+ family, FreeBSD 14+ and macOS 12+; others run best-effort)
+# OS detection (supported: Debian 12+, Ubuntu 24.04+, the RHEL 9+ family, FreeBSD 14+ and macOS 12+; others run best-effort)
 DISTRO_FAMILY="other"
 IS_BSD=0
 IS_MAC=0
@@ -72,6 +72,9 @@ elif [ -r /etc/os-release ]; then
       DISTRO_FAMILY="debian"
       if [ "${ID:-}" = "debian" ] && [ "${_major:-0}" -lt 12 ] 2>/dev/null; then
         echo "[?] Debian $VERSION_ID is older than the supported Debian 12+."
+      fi
+      if [ "${ID:-}" = "ubuntu" ] && [ "${_major:-0}" -lt 24 ] 2>/dev/null; then
+        echo "[?] Ubuntu $VERSION_ID is older than the supported Ubuntu 24.04+."
       fi ;;
     *" rhel "*|*" fedora "*|*" centos "*)
       DISTRO_FAMILY="rhel"
@@ -372,7 +375,9 @@ fi
 echo
 progress 6
 echo "== 7. Local SSH service and recent logins =="
+# Ubuntu uses socket-activated sshd (ssh.socket), so check the socket as well as the service.
 if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null \
+   || systemctl is-active --quiet ssh.socket 2>/dev/null \
    || { [ "$IS_BSD" -eq 1 ] && service sshd onestatus >/dev/null 2>&1; } \
    || { [ "$IS_MAC" -eq 1 ] && launchctl print-disabled system 2>/dev/null \
         | grep -Eq '"com.openssh.sshd" => (enabled|false)'; }; then
