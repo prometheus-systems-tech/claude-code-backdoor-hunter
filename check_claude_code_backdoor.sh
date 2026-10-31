@@ -1,7 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Read-only check for the trojanized anthropic.claude-code 2.1.313 (Cursor marketplace)
 # SSH backdoor, disclosed 30 Oct 2026. Makes no changes to the system.
 #
+# POSIX sh script (no bashisms). Supported: Debian 12+, RHEL 9+ family, FreeBSD 14+.
 # Exit codes: 0 = no indicators, 1 = indicators found, 2 = nothing definite, items need review.
 
 C2_IP="134.209.82.225"
@@ -14,17 +15,28 @@ review=0
 warn() { echo "[!] $*"; found=1; }
 note() { echo "[?] $*"; review=1; }
 ok()   { echo "[ok] $*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# timeout(1) is not POSIX; run without it when missing.
+if have timeout; then
+  tmo() { _t=$1; shift; timeout "$_t" "$@"; }
+else
+  tmo() { shift; "$@"; }
+fi
 
 TOTAL=8
 progress() {
-  local step=$1 width=30
-  local filled=$(( step * width / TOTAL ))
-  local bar
-  bar=$(printf '%*s' "$filled" '' | tr ' ' '#')$(printf '%*s' "$(( width - filled ))" '' | tr ' ' '-')
-  printf '[%s] %d/%d (%d%%)\n' "$bar" "$step" "$TOTAL" "$(( step * 100 / TOTAL ))"
+  _step=$1
+  _width=30
+  _filled=$(( _step * _width / TOTAL ))
+  _bar=""
+  _i=0
+  while [ "$_i" -lt "$_width" ]; do
+    if [ "$_i" -lt "$_filled" ]; then _bar="${_bar}#"; else _bar="${_bar}-"; fi
+    _i=$(( _i + 1 ))
+  done
+  printf '[%s] %d/%d (%d%%)\n' "$_bar" "$_step" "$TOTAL" "$(( _step * 100 / TOTAL ))"
 }
-
-shopt -s nullglob
 
 # OS detection (supported: Debian 12+, the RHEL 9+ family and FreeBSD 14+; others run best-effort)
 DISTRO_FAMILY="other"
@@ -59,60 +71,68 @@ elif [ -r /etc/os-release ]; then
 fi
 
 # BSD grep has no --max-filesize; only pass it when GNU grep supports it.
-GREP_MAX1=(); GREP_MAX5=()
+GREP_MAX1=""
+GREP_MAX5=""
 echo x | grep -q --max-filesize=1M y 2>/dev/null
-if [ $? -eq 1 ]; then GREP_MAX1=(--max-filesize=1M); GREP_MAX5=(--max-filesize=5M); fi
+if [ $? -eq 1 ]; then GREP_MAX1="--max-filesize=1M"; GREP_MAX5="--max-filesize=5M"; fi
 
 # Auth log files (Debian: auth.log, RHEL: secure, FreeBSD: auth.log). Debian 12 may have no file at all, only the journal.
-AUTH_LOGS=()
-for al in /var/log/auth.log /var/log/secure; do [ -r "$al" ] && AUTH_LOGS+=("$al"); done
+AUTH_LOGS=""
+for al in /var/log/auth.log /var/log/secure; do
+  [ -r "$al" ] && AUTH_LOGS="$AUTH_LOGS $al"
+done
 
 # ---------------------------------------------------------------- 1
 progress 0
 echo "== 1. Installs and extensions (packages, Flatpak, Snap, AppImage, tarball, VSIX) =="
-roots=(
-  "$HOME/.cursor" "$HOME/.cursor-server" "$HOME/.config/Cursor"
-  "$HOME/.vscode" "$HOME/.vscode-insiders" "$HOME/.vscode-oss" "$HOME/.vscodium"
-  "$HOME/.vscode-server" "$HOME/.var/app" "$HOME/snap"
+set --
+for r in \
+  "$HOME/.cursor" "$HOME/.cursor-server" "$HOME/.config/Cursor" \
+  "$HOME/.vscode" "$HOME/.vscode-insiders" "$HOME/.vscode-oss" "$HOME/.vscodium" \
+  "$HOME/.vscode-server" "$HOME/.var/app" "$HOME/snap" \
   "$HOME/.cursor-linux" /compat/linux/root/.cursor
-)
-existing=()
-for r in "${roots[@]}"; do [ -d "$r" ] && existing+=("$r"); done
+do
+  [ -d "$r" ] && set -- "$@" "$r"
+done
 
-ext_dirs=()
-if [ ${#existing[@]} -gt 0 ]; then
-  mapfile -t ext_dirs < <(timeout 30 find "${existing[@]}" -maxdepth 6 -type d \
-    -iname 'anthropic.claude-code-*' 2>/dev/null)
+ext_dirs=""
+if [ $# -gt 0 ]; then
+  ext_dirs=$(tmo 30 find "$@" -maxdepth 6 -type d -iname 'anthropic.claude-code-*' 2>/dev/null)
 fi
-if [ ${#ext_dirs[@]} -eq 0 ]; then
+if [ -z "$ext_dirs" ]; then
   ok "No anthropic.claude-code extension folders found."
 else
-  for d in "${ext_dirs[@]}"; do
+  while IFS= read -r d; do
+    [ -z "$d" ] && continue
     case "$d" in
       *"$BAD_VER"*) warn "Malicious version installed: $d" ;;
       *)            note "Extension present (not $BAD_VER), confirm it was never $BAD_VER: $d" ;;
     esac
-    if timeout 20 grep -rIqs "$C2_IP" "$d" 2>/dev/null; then
+    if tmo 20 grep -rIqs "$C2_IP" "$d" 2>/dev/null; then
       warn "C2 IP found inside extension files: $d"
     fi
-  done
+  done <<EOF_EXT
+$ext_dirs
+EOF_EXT
 fi
 
 # extensions.json records installed versions even after folders are removed
 for ej in "$HOME"/.cursor/extensions/extensions.json "$HOME"/.vscode*/extensions/extensions.json; do
-  if grep -o 'anthropic\.claude-code.\{0,250\}' "$ej" 2>/dev/null | grep -q "$BAD_VER"; then
+  [ -f "$ej" ] || continue
+  if grep -Eq "anthropic\.claude-code.{0,250}$BAD_VER" "$ej" 2>/dev/null; then
     warn "extensions.json lists claude-code $BAD_VER: $ej"
   fi
 done
 
 # editor logs can show past installs/updates even if the extension is gone
-logs=()
+set --
 for l in "$HOME/.config/Cursor/logs" "$HOME/.config/Code/logs" "$HOME/.cursor/logs"; do
-  [ -d "$l" ] && logs+=("$l")
+  [ -d "$l" ] && set -- "$@" "$l"
 done
-if [ ${#logs[@]} -gt 0 ]; then
-  hits=$(timeout 30 grep "${GREP_MAX5[@]}" -rIlE \
-    "claude-code[^[:space:]]*$BAD_VER|$BAD_VER[^[:space:]]*claude-code" "${logs[@]}" 2>/dev/null | head -5)
+if [ $# -gt 0 ]; then
+  # shellcheck disable=SC2086
+  hits=$(tmo 30 grep $GREP_MAX5 -rIlE \
+    "claude-code[^[:space:]]*$BAD_VER|$BAD_VER[^[:space:]]*claude-code" "$@" 2>/dev/null | head -n 5)
   if [ -n "$hits" ]; then
     warn "Editor logs mention claude-code $BAD_VER:"
     echo "$hits" | sed 's/^/    /'
@@ -121,80 +141,94 @@ fi
 
 echo
 echo "-- Package managers (the malicious item is the extension $BAD_VER, not the app itself) --"
-have() { command -v "$1" >/dev/null 2>&1; }
 pm_check() {
-  local label=$1 out=$2
-  if [ -n "$out" ]; then
-    note "$label install found, confirm the extension version separately:"
-    echo "$out" | sed 's/^/    /'
+  if [ -n "$2" ]; then
+    note "$1 install found, confirm the extension version separately:"
+    echo "$2" | sed 's/^/    /'
   fi
 }
-have dpkg    && pm_check "dpkg/apt"   "$(dpkg -l 2>/dev/null | grep -iE '^ii +(cursor|claude-code|anysphere)')"
+have dpkg    && pm_check "dpkg/apt"    "$(dpkg -l 2>/dev/null | grep -iE '^ii +(cursor|claude-code|anysphere)')"
 have pkg     && pm_check "FreeBSD pkg" "$(pkg info 2>/dev/null | grep -iE '^(cursor|claude-code|anysphere|vscode|code-oss|vscodium)')"
-have rpm     && pm_check "rpm/dnf"    "$(rpm -qa 2>/dev/null | grep -iE '^(cursor|claude-code|anysphere)')"
-have dnf     && pm_check "dnf history" "$(timeout 20 dnf -q history list 2>/dev/null | grep -iE 'cursor|claude-code|anysphere')"
-have pacman  && pm_check "pacman/AUR" "$(pacman -Q 2>/dev/null | grep -iE '^(cursor|claude-code)')"
-have snap    && pm_check "snap"       "$(snap list 2>/dev/null | grep -iE '^(cursor|claude)')"
-have flatpak && pm_check "flatpak"    "$(flatpak list --app --columns=application,version,installation 2>/dev/null | grep -iE 'cursor|claude|anysphere')"
-have brew    && pm_check "Homebrew"   "$(brew list --versions 2>/dev/null | grep -iE '^(cursor|claude)')"
-have nix-env && pm_check "nix"        "$(nix-env -q 2>/dev/null | grep -iE 'cursor|claude')"
-have npm     && pm_check "npm global" "$(npm ls -g --depth=0 2>/dev/null | grep -i 'claude-code')"
+have rpm     && pm_check "rpm/dnf"     "$(rpm -qa 2>/dev/null | grep -iE '^(cursor|claude-code|anysphere)')"
+have dnf     && pm_check "dnf history" "$(tmo 20 dnf -q history list 2>/dev/null | grep -iE 'cursor|claude-code|anysphere')"
+have pacman  && pm_check "pacman/AUR"  "$(pacman -Q 2>/dev/null | grep -iE '^(cursor|claude-code)')"
+have snap    && pm_check "snap"        "$(snap list 2>/dev/null | grep -iE '^(cursor|claude)')"
+have flatpak && pm_check "flatpak"     "$(flatpak list --app --columns=application,version,installation 2>/dev/null | grep -iE 'cursor|claude|anysphere')"
+have brew    && pm_check "Homebrew"    "$(brew list --versions 2>/dev/null | grep -iE '^(cursor|claude)')"
+have nix-env && pm_check "nix"         "$(nix-env -q 2>/dev/null | grep -iE 'cursor|claude')"
+have npm     && pm_check "npm global"  "$(npm ls -g --depth=0 2>/dev/null | grep -i 'claude-code')"
 have pnpm    && pm_check "pnpm global" "$(pnpm ls -g --depth=0 2>/dev/null | grep -i 'claude-code')"
 
 echo "-- AppImage, tarball and manual installs --"
-manual=$(timeout 40 find "$HOME/Applications" "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" \
+manual=$(tmo 40 find "$HOME/Applications" "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" \
   "$HOME/bin" "$HOME/opt" "$HOME/.local/bin" "$HOME/.local/opt" "$HOME/.local/share/appimagekit" \
   /opt /usr/local /compat/linux/opt /tmp /var/tmp /mnt /media -maxdepth 4 \
   \( -iname '*cursor*.appimage' -o -iname 'cursor*.tar*' -o -iname 'cursor*.tgz' -o -iname 'cursor*.zip' \
-     -o \( -iname 'cursor*' \( -type d -o -type f -perm -u+x \) \) \) 2>/dev/null | head -20)
+     -o \( -iname 'cursor*' \( -type d -o -type f -perm -u+x \) \) \) 2>/dev/null | head -n 20)
 if [ -n "$manual" ]; then
   note "Possible AppImage/tarball/manual Cursor installs:"
   echo "$manual" | sed 's/^/    /'
   # portable installs keep extensions inside the install directory
   while IFS= read -r p; do
     [ -d "$p" ] || continue
+    inner=$(tmo 15 find "$p" -maxdepth 6 -type d -iname 'anthropic.claude-code-*' 2>/dev/null)
+    [ -z "$inner" ] && continue
     while IFS= read -r e; do
       [ -z "$e" ] && continue
       case "$e" in
         *"$BAD_VER"*) warn "Malicious version in portable install: $e" ;;
-        *)             note "Extension inside portable install: $e" ;;
+        *)            note "Extension inside portable install: $e" ;;
       esac
-    done < <(timeout 15 find "$p" -maxdepth 6 -type d -iname 'anthropic.claude-code-*' 2>/dev/null)
-  done <<< "$manual"
+    done <<EOF_INNER
+$inner
+EOF_INNER
+  done <<EOF_MANUAL
+$manual
+EOF_MANUAL
 else
   ok "No AppImage or tarball Cursor installs found in common locations."
 fi
 
 if have cursor; then
-  note "cursor on PATH: $(readlink -f "$(command -v cursor)")"
+  _cur=$(command -v cursor)
+  note "cursor on PATH: $(readlink -f "$_cur" 2>/dev/null || echo "$_cur")"
 fi
-for df in /usr/share/applications/*cursor*.desktop /usr/local/share/applications/*cursor*.desktop "$HOME"/.local/share/applications/*cursor*.desktop \
-          /var/lib/flatpak/exports/share/applications/*ursor*.desktop "$HOME"/.local/share/flatpak/exports/share/applications/*ursor*.desktop; do
-  note "Desktop entry $df -> $(grep -m1 '^Exec=' "$df" 2>/dev/null)"
+for df in /usr/share/applications/*cursor*.desktop /usr/local/share/applications/*cursor*.desktop \
+          "$HOME"/.local/share/applications/*cursor*.desktop \
+          /var/lib/flatpak/exports/share/applications/*ursor*.desktop \
+          "$HOME"/.local/share/flatpak/exports/share/applications/*ursor*.desktop; do
+  [ -e "$df" ] || continue
+  note "Desktop entry $df -> $(grep '^Exec=' "$df" 2>/dev/null | head -n 1)"
 done
 
-vsix=$(timeout 30 find "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/.cache" /tmp \
-  -maxdepth 4 -iname '*claude-code*.vsix' 2>/dev/null | head)
+vsix=$(tmo 30 find "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/.cache" /tmp \
+  -maxdepth 4 -iname '*claude-code*.vsix' 2>/dev/null | head -n 10)
 if [ -n "$vsix" ]; then
   while IFS= read -r v; do
+    [ -z "$v" ] && continue
     case "$v" in
       *"$BAD_VER"*) warn "Malicious VSIX file: $v" ;;
-      *)             note "VSIX file (check its version): $v" ;;
+      *)            note "VSIX file (check its version): $v" ;;
     esac
-  done <<< "$vsix"
+  done <<EOF_VSIX
+$vsix
+EOF_VSIX
 fi
 
 # ---------------------------------------------------------------- 2
 echo
 progress 1
 echo "== 2. SSH authorized_keys (all readable users) =="
-keyfiles=("$HOME"/.ssh/authorized_keys "$HOME"/.ssh/authorized_keys2)
+set -- "$HOME/.ssh/authorized_keys" "$HOME/.ssh/authorized_keys2"
 for h in /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2 /root/.ssh/authorized_keys \
          /etc/ssh/authorized_keys.d/*; do
-  [ -r "$h" ] && [ "$h" != "$HOME/.ssh/authorized_keys" ] && keyfiles+=("$h")
+  [ -r "$h" ] || continue
+  [ "$h" = "$HOME/.ssh/authorized_keys" ] && continue
+  [ "$h" = "$HOME/.ssh/authorized_keys2" ] && continue
+  set -- "$@" "$h"
 done
 checked=0
-for kf in "${keyfiles[@]}"; do
+for kf in "$@"; do
   [ -f "$kf" ] || continue
   checked=1
   if grep -n "$KEY_LABEL" "$kf"; then
@@ -205,9 +239,11 @@ for kf in "${keyfiles[@]}"; do
   fi
   awk '{print "    - " $NF}' "$kf"
 done
-[ $checked -eq 0 ] && ok "No authorized_keys files found." || true
+[ $checked -eq 0 ] && ok "No authorized_keys files found."
 for d in /root/.ssh /etc/ssh/sshd_config.d; do
-  [ -d "$d" ] && [ ! -r "$d" ] && note "Cannot read $d (run with sudo for a full check)."
+  if [ -d "$d" ] && [ ! -r "$d" ]; then
+    note "Cannot read $d (run with sudo for a full check)."
+  fi
 done
 
 # ---------------------------------------------------------------- 3
@@ -219,29 +255,35 @@ if crontab -l 2>/dev/null | grep -E "$C2_IP|$KEY_LABEL"; then
 else
   ok "User crontab clean."
 fi
-persist_paths=(
-  "$HOME/.config/systemd" "$HOME/.config/autostart" "$HOME/.local/bin"
-  "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.zprofile"
-  "$HOME/.bash_logout" "$HOME/.config/fish"
-  /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly /etc/crontab
-  /etc/systemd/system /etc/systemd/user "$HOME/.bashrc.d"
-  /var/spool/cron /var/spool/cron/crontabs   # RHEL: /var/spool/cron, Debian: /var/spool/cron/crontabs
-  /var/cron/tabs /usr/local/etc/cron.d /etc/rc.conf /etc/rc.conf.d /etc/rc.local.d   # FreeBSD
-  /usr/local/etc/rc.d /etc/periodic /usr/local/etc/periodic /etc/csh.cshrc /etc/csh.login "$HOME/.cshrc" "$HOME/.login" "$HOME/.shrc" "$HOME/.tcshrc"
-  /etc/profile.d /etc/profile /etc/bashrc /etc/bash.bashrc /etc/rc.local /etc/rc.d/rc.local
+set --
+for p in \
+  "$HOME/.config/systemd" "$HOME/.config/autostart" "$HOME/.local/bin" \
+  "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.zprofile" \
+  "$HOME/.bash_logout" "$HOME/.config/fish" "$HOME/.bashrc.d" \
+  /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly /etc/crontab \
+  /etc/systemd/system /etc/systemd/user \
+  /var/spool/cron /var/spool/cron/crontabs \
+  /var/cron/tabs /usr/local/etc/cron.d /etc/rc.conf /etc/rc.conf.d /etc/rc.local.d \
+  /usr/local/etc/rc.d /etc/periodic /usr/local/etc/periodic /etc/csh.cshrc /etc/csh.login \
+  "$HOME/.cshrc" "$HOME/.login" "$HOME/.shrc" "$HOME/.tcshrc" \
+  /etc/profile.d /etc/profile /etc/bashrc /etc/bash.bashrc /etc/rc.local /etc/rc.d/rc.local \
   /etc/ssh/sshd_config /etc/ssh/sshd_config.d
-)
-scan=()
-for p in "${persist_paths[@]}"; do [ -e "$p" ] && [ -r "$p" ] && scan+=("$p"); done
-hits=$(timeout 60 grep "${GREP_MAX1[@]}" -rIlE "$C2_IP|$KEY_LABEL" "${scan[@]}" 2>/dev/null)
+do
+  [ -e "$p" ] && [ -r "$p" ] && set -- "$@" "$p"
+done
+hits=""
+if [ $# -gt 0 ]; then
+  # shellcheck disable=SC2086
+  hits=$(tmo 60 grep $GREP_MAX1 -rIlE "$C2_IP|$KEY_LABEL" "$@" 2>/dev/null)
+fi
 if [ -n "$hits" ]; then
   warn "Persistence files reference the C2 IP or key label:"
   echo "$hits" | sed 's/^/    /'
 else
   ok "No persistence files reference the C2 IP or key label."
 fi
-recent=$(timeout 30 find "$HOME/.config/systemd" "$HOME/.config/autostart" "$HOME/.local/bin" \
-  /etc/cron.d /etc/systemd/system -type f -newermt "$SINCE" 2>/dev/null | head -20)
+recent=$(tmo 30 find "$HOME/.config/systemd" "$HOME/.config/autostart" "$HOME/.local/bin" \
+  /etc/cron.d /etc/systemd/system -type f -newermt "$SINCE" 2>/dev/null | head -n 20)
 if [ -n "$recent" ]; then
   note "Persistence files created or changed since $SINCE (verify you made them):"
   echo "$recent" | sed 's/^/    /'
@@ -254,15 +296,19 @@ echo "== 4. Shell history =="
 hist_hits=0
 for hf in "$HOME"/.bash_history "$HOME"/.zsh_history "$HOME"/.local/share/fish/fish_history \
           "$HOME"/.history "$HOME"/.sh_history; do
-  [ -f "$hf" ] && grep -qE "$C2_IP|$KEY_LABEL" "$hf" && { warn "C2 IP or key label in $hf"; hist_hits=1; }
+  if [ -f "$hf" ] && grep -qE "$C2_IP|$KEY_LABEL" "$hf" 2>/dev/null; then
+    warn "C2 IP or key label in $hf"
+    hist_hits=1
+  fi
 done
-[ $hist_hits -eq 0 ] && ok "No references in shell history." || true
+[ $hist_hits -eq 0 ] && ok "No references in shell history."
 
 # ---------------------------------------------------------------- 5
 echo
 progress 4
 echo "== 5. Running processes (reverse tunnels) =="
-procs=$(ps -axww -o pid,user,args 2>/dev/null | grep -E "$C2_IP|ssh[^|]* -[A-Za-z]*R ?[0-9]+:" | grep -v grep)
+allprocs=$(ps -axww -o pid,user,args 2>/dev/null || ps -ef 2>/dev/null)
+procs=$(echo "$allprocs" | grep -E "$C2_IP|ssh[^|]* -[A-Za-z]*R ?[0-9]+:" | grep -v grep)
 if [ -n "$procs" ]; then
   warn "Suspicious process(es):"
   echo "$procs" | sed 's/^/    /'
@@ -282,14 +328,14 @@ if [ "$IS_BSD" -eq 1 ]; then
   else
     ok "No active connection to $C2_IP."
   fi
-elif command -v ss >/dev/null 2>&1; then
+elif have ss; then
   if ss -tn 2>/dev/null | grep -q "$C2_IP"; then
     warn "Active connection to $C2_IP"
     ss -tnp 2>/dev/null | grep "$C2_IP" | sed 's/^/    /'
   else
     ok "No active connection to $C2_IP."
   fi
-elif command -v netstat >/dev/null 2>&1; then
+elif have netstat; then
   if netstat -tn 2>/dev/null | grep -q "$C2_IP"; then
     warn "Active connection to $C2_IP"
     netstat -tnp 2>/dev/null | grep "$C2_IP" | sed 's/^/    /'
@@ -310,17 +356,18 @@ if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet ss
 else
   ok "sshd not running."
 fi
-if command -v journalctl >/dev/null 2>&1; then
-  acc=$(journalctl _COMM=sshd --since "$SINCE" --no-pager 2>/dev/null | grep -E "Accepted (publickey|password)" | tail -5)
+if have journalctl; then
+  acc=$(journalctl _COMM=sshd --since "$SINCE" --no-pager 2>/dev/null | grep -E "Accepted (publickey|password)" | tail -n 5)
   if [ -n "$acc" ]; then
     note "SSH logins since $SINCE (verify they were you):"
     echo "$acc" | sed 's/^/    /'
   fi
 fi
-if [ ${#AUTH_LOGS[@]} -gt 0 ]; then
-  acc=$(grep -hE "Accepted (publickey|password)" "${AUTH_LOGS[@]}" 2>/dev/null | tail -5)
+if [ -n "$AUTH_LOGS" ]; then
+  # shellcheck disable=SC2086
+  acc=$(grep -hE "Accepted (publickey|password)" $AUTH_LOGS 2>/dev/null | tail -n 5)
   if [ -n "$acc" ]; then
-    note "Recent SSH logins in ${AUTH_LOGS[*]} (verify they were you):"
+    note "Recent SSH logins in$AUTH_LOGS (verify they were you):"
     echo "$acc" | sed 's/^/    /'
   fi
 fi
@@ -329,7 +376,7 @@ fi
 echo
 progress 7
 echo "== 8. System logs for the C2 IP =="
-if command -v journalctl >/dev/null 2>&1; then
+if have journalctl; then
   if journalctl --since "$SINCE" --no-pager 2>/dev/null | grep -q "$C2_IP"; then
     warn "System journal mentions $C2_IP since $SINCE."
   else
@@ -338,16 +385,17 @@ if command -v journalctl >/dev/null 2>&1; then
 else
   echo "    (journalctl not available, relying on classic log files)"
 fi
-# Classic log files (RHEL: secure, messages; Debian: auth.log, syslog), if readable
-logfiles=()
+# Classic log files (RHEL: secure, messages; Debian: auth.log, syslog; FreeBSD: auth.log, messages), if readable
+logfiles=""
 for lf in /var/log/auth.log /var/log/secure /var/log/syslog /var/log/messages /var/log/kern.log; do
-  [ -r "$lf" ] && logfiles+=("$lf")
+  [ -r "$lf" ] && logfiles="$logfiles $lf"
 done
-if [ ${#logfiles[@]} -gt 0 ]; then
-  if grep -qs "$C2_IP" "${logfiles[@]}"; then
-    warn "Log files mention $C2_IP: ${logfiles[*]}"
+if [ -n "$logfiles" ]; then
+  # shellcheck disable=SC2086
+  if grep -qs "$C2_IP" $logfiles; then
+    warn "Log files mention $C2_IP:$logfiles"
   else
-    ok "No mentions of $C2_IP in ${logfiles[*]}."
+    ok "No mentions of $C2_IP in$logfiles."
   fi
 else
   note "No readable classic log files (run with sudo for a complete check)."

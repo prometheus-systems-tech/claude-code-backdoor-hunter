@@ -10,11 +10,7 @@
 
 Supported platforms: Debian 12+, RHEL 9+ (including compatible rebuilds) and FreeBSD 14+ (`pkg` and manual or Linux-compat installs). Other Linux distributions run on a best-effort basis.
 
-On FreeBSD, bash is not part of the base system:
-
-```bash
-pkg install bash
-```
+The script is plain POSIX `sh`, so no extra shell needs installing on any platform.
 
 ## Usage
 
@@ -50,8 +46,8 @@ Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some
 
 ## Requirements
 
-- bash 4+ (FreeBSD: `pkg install bash`), `find`, `grep`, `awk`, `ps`, `timeout`
-- Optional: `ss`, `netstat` or `sockstat`, `journalctl`, package manager CLIs (`dpkg`, `rpm`, `dnf`, `pkg`, etc.)
+- A POSIX `sh` (dash, FreeBSD `sh`, bash in sh mode), `find`, `grep`, `awk`, `sed`, `ps`
+- Optional: `timeout`, `ss`, `netstat` or `sockstat`, `journalctl`, package manager CLIs (`dpkg`, `rpm`, `dnf`, `pkg`, etc.)
 
 ---
 
