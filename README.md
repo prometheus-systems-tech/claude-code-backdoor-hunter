@@ -32,6 +32,25 @@ Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some
 7. Local SSH service and recent logins (journal, `auth.log`, `secure`)
 8. System logs for the C2 IP
 
+## GUI (optional)
+
+`check_claude_code_backdoor_gui.py` is a GTK 4 front end that runs the script, streams the output with colour coding, shows progress and the final result, and can save a report. All detection logic stays in the shell script.
+
+```bash
+./check_claude_code_backdoor_gui.py
+```
+
+GTK 4 selects the Wayland or X11 backend automatically. To force one, set `GDK_BACKEND=wayland` or `GDK_BACKEND=x11`.
+
+The "Run with administrator rights" option uses `pkexec` and only elevates the shell script, not the GUI, so it works the same under Wayland and X11. Your own home directory is still the one checked.
+
+Dependencies (GTK 4.8 or newer, Python 3):
+
+- Debian and Ubuntu: `sudo apt install python3-gi gir1.2-gtk-4.0`
+- RHEL 9+: `sudo dnf install python3-gobject gtk4`
+- FreeBSD: `pkg install gtk4 py311-gobject3` (match the package prefix to your Python version)
+- macOS: `brew install pygobject3 gtk4`
+
 ## Exit codes
 
 - `0` - no indicators found
