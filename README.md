@@ -8,7 +8,7 @@
 
 `check_claude_code_backdoor.sh` looks for indicators of compromise from the SSH backdoor in the trojanized `anthropic.claude-code` 2.1.313 extension, disclosed on 30 October 2026. It makes no changes to the system.
 
-Supported platforms: Debian 12+, RHEL 9+ (including compatible rebuilds) and FreeBSD 14+ (`pkg` and manual or Linux-compat installs). Other Linux distributions run on a best-effort basis.
+Supported platforms: Debian 12+, RHEL 9+ (including compatible rebuilds), FreeBSD 14+ (`pkg` and manual or Linux-compat installs) and macOS 12+ (Homebrew, `.app` bundles, `pkgutil`). Other Linux distributions run on a best-effort basis.
 
 The script is plain POSIX `sh`, so no extra shell needs installing on any platform.
 
@@ -46,8 +46,8 @@ Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some
 
 ## Requirements
 
-- A POSIX `sh` (dash, FreeBSD `sh`, bash in sh mode), `find`, `grep`, `awk`, `sed`, `ps`
-- Optional: `timeout`, `ss`, `netstat` or `sockstat`, `journalctl`, package manager CLIs (`dpkg`, `rpm`, `dnf`, `pkg`, etc.)
+- A POSIX `sh` (dash, FreeBSD `sh`, macOS `sh`, bash in sh mode), `find`, `grep`, `awk`, `sed`, `ps`
+- Optional: `timeout` (macOS: `gtimeout` from Homebrew coreutils), `ss`, `netstat`, `sockstat` or `lsof`, `journalctl`, `log` (macOS), package manager CLIs (`dpkg`, `rpm`, `dnf`, `pkg`, `brew`, etc.)
 
 ---
 

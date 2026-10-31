@@ -2,7 +2,7 @@
 # Read-only check for the trojanized anthropic.claude-code 2.1.313 (Cursor marketplace)
 # SSH backdoor, disclosed 30 Oct 2026. Makes no changes to the system.
 #
-# POSIX sh script (no bashisms). Supported: Debian 12+, RHEL 9+ family, FreeBSD 14+.
+# POSIX sh script (no bashisms). Supported: Debian 12+, RHEL 9+ family, FreeBSD 14+, macOS 12+.
 # Exit codes: 0 = no indicators, 1 = indicators found, 2 = nothing definite, items need review.
 
 C2_IP="134.209.82.225"
@@ -20,6 +20,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # timeout(1) is not POSIX; run without it when missing.
 if have timeout; then
   tmo() { _t=$1; shift; timeout "$_t" "$@"; }
+elif have gtimeout; then
+  tmo() { _t=$1; shift; gtimeout "$_t" "$@"; }
 else
   tmo() { shift; "$@"; }
 fi
@@ -38,10 +40,20 @@ progress() {
   printf '[%s] %d/%d (%d%%)\n' "$_bar" "$_step" "$TOTAL" "$(( _step * 100 / TOTAL ))"
 }
 
-# OS detection (supported: Debian 12+, the RHEL 9+ family and FreeBSD 14+; others run best-effort)
+# OS detection (supported: Debian 12+, the RHEL 9+ family, FreeBSD 14+ and macOS 12+; others run best-effort)
 DISTRO_FAMILY="other"
 IS_BSD=0
-if [ "$(uname -s 2>/dev/null)" = "FreeBSD" ]; then
+IS_MAC=0
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+  DISTRO_FAMILY="macos"
+  IS_MAC=1
+  _macv="$(sw_vers -productVersion 2>/dev/null)"
+  _major="${_macv%%.*}"
+  if [ "${_major:-0}" -lt 12 ] 2>/dev/null; then
+    echo "[?] macOS $_macv is older than the supported macOS 12+."
+  fi
+  echo "Detected: macOS $_macv (family: $DISTRO_FAMILY)"
+elif [ "$(uname -s 2>/dev/null)" = "FreeBSD" ]; then
   DISTRO_FAMILY="freebsd"
   IS_BSD=1
   _fbsd="$(freebsd-version -u 2>/dev/null || uname -r)"
@@ -90,7 +102,9 @@ for r in \
   "$HOME/.cursor" "$HOME/.cursor-server" "$HOME/.config/Cursor" \
   "$HOME/.vscode" "$HOME/.vscode-insiders" "$HOME/.vscode-oss" "$HOME/.vscodium" \
   "$HOME/.vscode-server" "$HOME/.var/app" "$HOME/snap" \
-  "$HOME/.cursor-linux" /compat/linux/root/.cursor
+  "$HOME/.cursor-linux" /compat/linux/root/.cursor \
+  "$HOME/Library/Application Support/Cursor" "$HOME/Library/Application Support/Code" \
+  "$HOME/Library/Application Support/Code - Insiders" "$HOME/Library/Application Support/VSCodium"
 do
   [ -d "$r" ] && set -- "$@" "$r"
 done
@@ -126,7 +140,9 @@ done
 
 # editor logs can show past installs/updates even if the extension is gone
 set --
-for l in "$HOME/.config/Cursor/logs" "$HOME/.config/Code/logs" "$HOME/.cursor/logs"; do
+for l in "$HOME/.config/Cursor/logs" "$HOME/.config/Code/logs" "$HOME/.cursor/logs" \
+         "$HOME/Library/Application Support/Cursor/logs" "$HOME/Library/Application Support/Code/logs" \
+         "$HOME/Library/Logs"; do
   [ -d "$l" ] && set -- "$@" "$l"
 done
 if [ $# -gt 0 ]; then
@@ -155,6 +171,8 @@ have pacman  && pm_check "pacman/AUR"  "$(pacman -Q 2>/dev/null | grep -iE '^(cu
 have snap    && pm_check "snap"        "$(snap list 2>/dev/null | grep -iE '^(cursor|claude)')"
 have flatpak && pm_check "flatpak"     "$(flatpak list --app --columns=application,version,installation 2>/dev/null | grep -iE 'cursor|claude|anysphere')"
 have brew    && pm_check "Homebrew"    "$(brew list --versions 2>/dev/null | grep -iE '^(cursor|claude)')"
+have brew    && pm_check "Homebrew cask" "$(brew list --cask --versions 2>/dev/null | grep -iE '^(cursor|claude|visual-studio-code|vscodium)')"
+have pkgutil && pm_check "macOS pkgutil" "$(pkgutil --pkgs 2>/dev/null | grep -iE 'cursor|claude-code|anysphere|todesktop')"
 have nix-env && pm_check "nix"         "$(nix-env -q 2>/dev/null | grep -iE 'cursor|claude')"
 have npm     && pm_check "npm global"  "$(npm ls -g --depth=0 2>/dev/null | grep -i 'claude-code')"
 have pnpm    && pm_check "pnpm global" "$(pnpm ls -g --depth=0 2>/dev/null | grep -i 'claude-code')"
@@ -162,7 +180,7 @@ have pnpm    && pm_check "pnpm global" "$(pnpm ls -g --depth=0 2>/dev/null | gre
 echo "-- AppImage, tarball and manual installs --"
 manual=$(tmo 40 find "$HOME/Applications" "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" \
   "$HOME/bin" "$HOME/opt" "$HOME/.local/bin" "$HOME/.local/opt" "$HOME/.local/share/appimagekit" \
-  /opt /usr/local /compat/linux/opt /tmp /var/tmp /mnt /media -maxdepth 4 \
+  /Applications /Users/Shared /opt /usr/local /compat/linux/opt /tmp /var/tmp /mnt /media -maxdepth 4 \
   \( -iname '*cursor*.appimage' -o -iname 'cursor*.tar*' -o -iname 'cursor*.tgz' -o -iname 'cursor*.zip' \
      -o \( -iname 'cursor*' \( -type d -o -type f -perm -u+x \) \) \) 2>/dev/null | head -n 20)
 if [ -n "$manual" ]; then
@@ -221,6 +239,7 @@ progress 1
 echo "== 2. SSH authorized_keys (all readable users) =="
 set -- "$HOME/.ssh/authorized_keys" "$HOME/.ssh/authorized_keys2"
 for h in /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2 /root/.ssh/authorized_keys \
+         /Users/*/.ssh/authorized_keys /Users/*/.ssh/authorized_keys2 /var/root/.ssh/authorized_keys \
          /etc/ssh/authorized_keys.d/*; do
   [ -r "$h" ] || continue
   [ "$h" = "$HOME/.ssh/authorized_keys" ] && continue
@@ -267,7 +286,9 @@ for p in \
   /usr/local/etc/rc.d /etc/periodic /usr/local/etc/periodic /etc/csh.cshrc /etc/csh.login \
   "$HOME/.cshrc" "$HOME/.login" "$HOME/.shrc" "$HOME/.tcshrc" \
   /etc/profile.d /etc/profile /etc/bashrc /etc/bash.bashrc /etc/rc.local /etc/rc.d/rc.local \
-  /etc/ssh/sshd_config /etc/ssh/sshd_config.d
+  /etc/ssh/sshd_config /etc/ssh/sshd_config.d \
+  "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons /usr/lib/cron/tabs \
+  /etc/zshenv /etc/zprofile /etc/zshrc /etc/paths.d "$HOME/.zshenv"
 do
   [ -e "$p" ] && [ -r "$p" ] && set -- "$@" "$p"
 done
@@ -283,6 +304,7 @@ else
   ok "No persistence files reference the C2 IP or key label."
 fi
 recent=$(tmo 30 find "$HOME/.config/systemd" "$HOME/.config/autostart" "$HOME/.local/bin" \
+  "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons \
   /etc/cron.d /etc/systemd/system -type f -newermt "$SINCE" 2>/dev/null | head -n 20)
 if [ -n "$recent" ]; then
   note "Persistence files created or changed since $SINCE (verify you made them):"
@@ -320,8 +342,8 @@ fi
 echo
 progress 5
 echo "== 6. Network connections =="
-if [ "$IS_BSD" -eq 1 ]; then
-  conns="$(sockstat -c 2>/dev/null; netstat -an -p tcp 2>/dev/null)"
+if [ "$IS_BSD" -eq 1 ] || [ "$IS_MAC" -eq 1 ]; then
+  conns="$(sockstat -c 2>/dev/null; netstat -an -p tcp 2>/dev/null; lsof -nP -i 2>/dev/null)"
   if echo "$conns" | grep -q "$C2_IP"; then
     warn "Active connection to $C2_IP"
     echo "$conns" | grep "$C2_IP" | sed 's/^/    /'
@@ -351,13 +373,25 @@ echo
 progress 6
 echo "== 7. Local SSH service and recent logins =="
 if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null \
-   || { [ "$IS_BSD" -eq 1 ] && service sshd onestatus >/dev/null 2>&1; }; then
+   || { [ "$IS_BSD" -eq 1 ] && service sshd onestatus >/dev/null 2>&1; } \
+   || { [ "$IS_MAC" -eq 1 ] && launchctl print-disabled system 2>/dev/null \
+        | grep -Eq '"com.openssh.sshd" => (enabled|false)'; }; then
   note "sshd is running. Confirm this is intentional."
 else
   ok "sshd not running."
 fi
 if have journalctl; then
   acc=$(journalctl _COMM=sshd --since "$SINCE" --no-pager 2>/dev/null | grep -E "Accepted (publickey|password)" | tail -n 5)
+  if [ -n "$acc" ]; then
+    note "SSH logins since $SINCE (verify they were you):"
+    echo "$acc" | sed 's/^/    /'
+  fi
+fi
+if [ "$IS_MAC" -eq 1 ] && have log; then
+  # unified log; may be partial without sudo. The header line echoes the predicate, so filter it out.
+  acc=$(tmo 120 log show --start "$SINCE" --style compact \
+    --predicate 'process == "sshd" AND eventMessage CONTAINS "Accepted"' 2>/dev/null \
+    | grep -E "Accepted (publickey|password)" | tail -n 5)
   if [ -n "$acc" ]; then
     note "SSH logins since $SINCE (verify they were you):"
     echo "$acc" | sed 's/^/    /'
@@ -382,12 +416,21 @@ if have journalctl; then
   else
     ok "No journal mentions of $C2_IP (journal may need sudo to be complete)."
   fi
+elif [ "$IS_MAC" -eq 1 ] && have log; then
+  # unified log; this can take a while. The header line echoes the predicate, so filter it out.
+  if tmo 180 log show --start "$SINCE" --style compact \
+       --predicate "eventMessage CONTAINS \"$C2_IP\"" 2>/dev/null \
+       | grep -v 'Filtering the log data' | grep -q "$C2_IP"; then
+    warn "Unified log mentions $C2_IP since $SINCE."
+  else
+    ok "No unified log mentions of $C2_IP (log may need sudo to be complete)."
+  fi
 else
   echo "    (journalctl not available, relying on classic log files)"
 fi
 # Classic log files (RHEL: secure, messages; Debian: auth.log, syslog; FreeBSD: auth.log, messages), if readable
 logfiles=""
-for lf in /var/log/auth.log /var/log/secure /var/log/syslog /var/log/messages /var/log/kern.log; do
+for lf in /var/log/auth.log /var/log/secure /var/log/syslog /var/log/messages /var/log/kern.log /var/log/system.log; do
   [ -r "$lf" ] && logfiles="$logfiles $lf"
 done
 if [ -n "$logfiles" ]; then
@@ -397,7 +440,7 @@ if [ -n "$logfiles" ]; then
   else
     ok "No mentions of $C2_IP in$logfiles."
   fi
-else
+elif [ "$IS_MAC" -ne 1 ]; then
   note "No readable classic log files (run with sudo for a complete check)."
 fi
 
