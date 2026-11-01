@@ -106,6 +106,6 @@ The package installs `claude-code-backdoor-hunter` and `claude-code-backdoor-hun
 
 ---
 
-*Document version: v1.0.0 — last reviewed 2026-10-31*
-*© 2026 Ross WD Cameron <rwd.cameron@prometheus-systems.co.za>.*
-*Licensed under the GNU General Public License, version 2. See [LICENSE](LICENSE).*
+*Document version: v1.0.0 — last reviewed 2026-10-31*  
+*© 2026 Ross WD Cameron <rwd.cameron@prometheus-systems.co.za>.*  
+*Licensed under the GNU General Public License, version 2. See [LICENSE](LICENSE).*  
