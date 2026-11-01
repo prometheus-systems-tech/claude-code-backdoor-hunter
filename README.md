@@ -8,20 +8,22 @@
 
 ## Overview
 
-`check_claude_code_backdoor.sh` looks for indicators of compromise from the SSH backdoor in the trojanized `anthropic.claude-code` 2.1.313 extension, disclosed on 30 October 2026. It makes no changes to the system.
+`claude-code-backdoor-hunter` looks for indicators of compromise from the SSH backdoor in the trojanized `anthropic.claude-code` 2.1.313 extension, disclosed on 30 October 2026. It makes no changes to the system.
 
 Supported platforms: Debian 12+, Ubuntu 24.04+, RHEL 9+ (including compatible rebuilds), FreeBSD 14+ (`pkg` and manual or Linux-compat installs) and macOS 12+ (Homebrew, `.app` bundles, `pkgutil`). Other Linux distributions run on a best-effort basis.
 
-The script is plain POSIX `sh`, so no extra shell needs installing on any platform.
+It is a single C99 source file ([src/hunter.c](src/hunter.c)) with no dependencies beyond a C compiler, so it builds on Linux, FreeBSD, macOS and Windows.
 
 ## Usage
 
 ```bash
-chmod +x check_claude_code_backdoor.sh
-./check_claude_code_backdoor.sh
+make hunter
+./build/hunter
 ```
 
 Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some logs and the system journal may be unreadable, and the script reports this.
+
+If you run an SSH server on purpose, pass `--sshd-ok` to report a running `sshd` as `[ok]` instead of a `[?]` review item. In the GUI, tick "SSH server is expected to run".
 
 ## Checks
 
@@ -38,22 +40,33 @@ The checks match published indicators (Cursor security notice, 30 October 2026):
 
 ## GUI (optional)
 
-`check_claude_code_backdoor_gui.py` is a GTK 4 front end that runs the script, streams the output with colour coding, shows progress and the final result, and can save a report. All detection logic stays in the shell script.
+`src/gui.c` is a GTK 4 front end written in C. It runs the `hunter` binary, streams the output with colour coding, shows progress and the final result, and can save a report. All detection logic stays in `hunter`.
 
 ```bash
-./check_claude_code_backdoor_gui.py
+make gui
+./build/hunter-gui
 ```
+
+The GUI looks for `hunter` next to itself, then in `../libexec/claude-code-backdoor-hunter/`. Set `HUNTER_BIN` to use a different checker binary.
 
 GTK 4 selects the Wayland or X11 backend automatically. To force one, set `GDK_BACKEND=wayland` or `GDK_BACKEND=x11`.
 
-The "Run with administrator rights" option uses `pkexec` and only elevates the shell script, not the GUI, so it works the same under Wayland and X11. Your own home directory is still the one checked.
+The "Run with administrator rights" option uses `pkexec` and only elevates the checker, not the GUI, so it works the same under Wayland and X11. Your own home directory is still the one checked.
 
-Dependencies (GTK 4.8 or newer, Python 3):
+Build dependencies (GTK 4.8 or newer, a C compiler, `pkg-config`):
 
-- Debian and Ubuntu: `sudo apt install python3-gi gir1.2-gtk-4.0`
-- RHEL 9+: `sudo dnf install python3-gobject gtk4`
-- FreeBSD: `pkg install gtk4 py311-gobject3` (match the package prefix to your Python version)
-- macOS: `brew install pygobject3 gtk4`
+- Debian and Ubuntu: `sudo apt install build-essential libgtk-4-dev`
+- RHEL 9+: `sudo dnf install gcc gtk4-devel`
+- FreeBSD: `pkg install gtk4 pkgconf`
+- macOS: `brew install gtk4 pkg-config`
+
+## Building on other platforms
+
+`make all` builds both `hunter` and `hunter-gui`.
+
+On Windows with MinGW: `gcc -std=c99 -O2 -o hunter.exe src/hunter.c`. The Windows build checks extension folders, `authorized_keys` (including `administrators_authorized_keys`), startup folders, scheduled tasks, PowerShell history, processes and `netstat`. Windows event logs are not scanned yet.
+
+🛈 Note: the Windows path is untested. It was written against the Win32 API but only built and run on Linux.
 
 ## Native packages
 
@@ -68,7 +81,7 @@ Builds a package for the host OS into `dist/`:
 - FreeBSD: `pkg` package (use `gmake native`)
 - macOS: `.pkg` (needs `pkgbuild`)
 
-The package installs `claude-code-backdoor-hunter` and `claude-code-backdoor-hunter-gui` into the path, plus a desktop entry and icon. Use `make deb`, `make rpm`, `make freebsd` or `make macos` to target one explicitly, and `make clean` to remove build output.
+The package installs `claude-code-backdoor-hunter` and `claude-code-backdoor-hunter-gui` (the C binaries) into the path, plus a desktop entry and icon. Use `make deb`, `make rpm`, `make freebsd` or `make macos` to target one explicitly, and `make clean` to remove build output.
 
 ## Exit codes
 
@@ -84,7 +97,7 @@ The package installs `claude-code-backdoor-hunter` and `claude-code-backdoor-hun
 
 ## Requirements
 
-- A POSIX `sh` (dash, FreeBSD `sh`, macOS `sh`, bash in sh mode), `find`, `grep`, `awk`, `sed`, `ps`
+- A C99 compiler and `make` (GNU make; FreeBSD: `gmake`)
 - Optional: `timeout` (macOS: `gtimeout` from Homebrew coreutils), `ss`, `netstat`, `sockstat` or `lsof`, `journalctl`, `log` (macOS), package manager CLIs (`dpkg`, `rpm`, `dnf`, `pkg`, `brew`, etc.)
 
 ---

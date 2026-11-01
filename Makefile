@@ -2,6 +2,7 @@
 # Licensed under the GNU General Public License, version 2.
 #
 # Targets:
+#   make hunter   build the C port into build/hunter
 #   make native   build a package for the host OS (deb, rpm, FreeBSD pkg or macOS pkg)
 #   make deb | rpm | freebsd | macos
 #   make install  install into DESTDIR/PREFIX
@@ -30,7 +31,23 @@ DIST  := dist
 
 OSID := $(shell . /etc/os-release 2>/dev/null && echo "$$ID $$ID_LIKE")
 
-.PHONY: native install deb rpm freebsd macos clean
+.PHONY: native install deb rpm freebsd macos clean hunter gui all
+
+CC     ?= cc
+CFLAGS ?= -O2
+GTK_CFLAGS := $(shell pkg-config --cflags gtk4 2>/dev/null)
+GTK_LIBS   := $(shell pkg-config --libs gtk4 2>/dev/null)
+
+all: hunter gui
+
+hunter: src/hunter.c
+	mkdir -p $(BUILD)
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -o $(BUILD)/hunter src/hunter.c
+
+gui: src/gui.c
+	@pkg-config --exists gtk4 || { echo "GTK 4 development files not found (apt install libgtk-4-dev / dnf install gtk4-devel)"; exit 1; }
+	mkdir -p $(BUILD)
+	$(CC) -std=gnu99 -Wall -Wextra -Wno-deprecated-declarations $(CFLAGS) $(GTK_CFLAGS) -o $(BUILD)/hunter-gui src/gui.c $(GTK_LIBS)
 
 native:
 ifeq ($(UNAME),Darwin)
@@ -48,15 +65,14 @@ else
 endif
 
 # ---------------------------------------------------------------- install
-install:
+install: hunter gui
 	install -d $(DESTDIR)$(PREFIX)/libexec/$(NAME) $(DESTDIR)$(PREFIX)/bin \
 	  $(DESTDIR)$(PREFIX)/share/applications \
 	  $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps \
 	  $(DESTDIR)$(PREFIX)/share/doc/$(NAME)
-	install -m 755 check_claude_code_backdoor.sh check_claude_code_backdoor_gui.py \
-	  $(DESTDIR)$(PREFIX)/libexec/$(NAME)/
-	ln -sf $(PREFIX)/libexec/$(NAME)/check_claude_code_backdoor.sh $(DESTDIR)$(PREFIX)/bin/$(NAME)
-	ln -sf $(PREFIX)/libexec/$(NAME)/check_claude_code_backdoor_gui.py $(DESTDIR)$(PREFIX)/bin/$(NAME)-gui
+	install -m 755 $(BUILD)/hunter $(BUILD)/hunter-gui $(DESTDIR)$(PREFIX)/libexec/$(NAME)/
+	ln -sf $(PREFIX)/libexec/$(NAME)/hunter $(DESTDIR)$(PREFIX)/bin/$(NAME)
+	ln -sf $(PREFIX)/libexec/$(NAME)/hunter-gui $(DESTDIR)$(PREFIX)/bin/$(NAME)-gui
 	install -m 644 packaging/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/
 	install -m 644 packaging/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/
 	install -m 644 README.md LICENSE $(DESTDIR)$(PREFIX)/share/doc/$(NAME)/
@@ -78,8 +94,8 @@ deb:
 	  'Version: $(VERSION)' \
 	  'Section: utils' \
 	  'Priority: optional' \
-	  'Architecture: all' \
-	  'Depends: python3, python3-gi, gir1.2-gtk-4.0, policykit-1' \
+	  'Architecture: $(shell dpkg --print-architecture 2>/dev/null)' \
+	  'Depends: libgtk-4-1, policykit-1' \
 	  'Maintainer: $(MAINTAINER)' \
 	  'Homepage: $(URL)' \
 	  'Description: $(SUMMARY)' \
@@ -87,8 +103,8 @@ deb:
 	  ' trojanized anthropic.claude-code 2.1.313 extension. Includes a GTK 4' \
 	  ' front end. Makes no changes to the system.' \
 	  > $(STAGE)/DEBIAN/control
-	dpkg-deb --root-owner-group --build $(STAGE) $(DIST)/$(NAME)_$(VERSION)_all.deb
-	@echo "Built $(DIST)/$(NAME)_$(VERSION)_all.deb"
+	dpkg-deb --root-owner-group --build $(STAGE) $(DIST)/$(NAME)_$(VERSION)_$(shell dpkg --print-architecture 2>/dev/null).deb
+	@echo "Built $(DIST)/$(NAME)_$(VERSION)_$(shell dpkg --print-architecture 2>/dev/null).deb"
 
 # ------------------------------------------------------------------ rpm
 rpm:
@@ -102,8 +118,7 @@ rpm:
 	  'Summary: $(SUMMARY)' \
 	  'License: GPL-2.0-only' \
 	  'URL: $(URL)' \
-	  'BuildArch: noarch' \
-	  'Requires: python3, python3-gobject, gtk4, polkit' \
+	  'Requires: gtk4, polkit' \
 	  '%description' \
 	  'Checks for indicators of compromise from the SSH backdoor in the' \
 	  'trojanized anthropic.claude-code 2.1.313 extension. Includes a GTK 4' \
@@ -120,7 +135,6 @@ rpm:
 	  > $(BUILD)/rpm/$(NAME).spec
 	rpmbuild -bb --define "_topdir $(CURDIR)/$(BUILD)/rpm" \
 	  --define "_rpmdir $(CURDIR)/$(DIST)" --define "_build_id_links none" \
-	  --define "__brp_mangle_shebangs /usr/bin/true" \
 	  --define "debug_package %{nil}" $(BUILD)/rpm/$(NAME).spec
 	@echo "RPM written under $(DIST)/"
 
@@ -139,7 +153,7 @@ freebsd:
 	  'prefix: "/usr/local"' \
 	  'licenses: ["GPLv2"]' \
 	  'licenselogic: "single"' \
-	  'desc: "Checks for indicators of compromise from the SSH backdoor in the trojanized anthropic.claude-code extension. The GUI needs gtk4 and the py-gobject3 package matching your Python version."' \
+	  'desc: "Checks for indicators of compromise from the SSH backdoor in the trojanized anthropic.claude-code extension. The GUI needs the gtk4 package."' \
 	  > $(BUILD)/meta/+MANIFEST
 	cd $(STAGE)/usr/local && find . \( -type f -o -type l \) | sed 's|^\./||' | sort > $(CURDIR)/$(BUILD)/plist
 	pkg create -r $(CURDIR)/$(STAGE) -m $(BUILD)/meta -p $(BUILD)/plist -o $(DIST)
