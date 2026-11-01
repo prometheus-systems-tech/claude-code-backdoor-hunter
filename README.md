@@ -68,6 +68,10 @@ On Windows with MinGW: `gcc -std=c99 -O2 -o hunter.exe src/hunter.c`. The Window
 
 🛈 Note: the Windows path is untested. It was written against the Win32 API but only built and run on Linux.
 
+### Windows installer
+
+`make windows` cross-compiles `hunter.exe` (Zig or MinGW) and builds `dist/claude-code-backdoor-hunter-1.0.0-setup.exe` with NSIS. The installer needs Windows 10 or later (64-bit), installs to `Program Files`, adds Start Menu shortcuts that run the scan in a console, and registers an uninstaller. Override `WINCC` and `MAKENSIS` to use `x86_64-w64-mingw32-gcc` and a native `makensis`.
+
 ## Native packages
 
 ```bash

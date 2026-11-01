@@ -31,7 +31,7 @@ DIST  := dist
 
 OSID := $(shell . /etc/os-release 2>/dev/null && echo "$$ID $$ID_LIKE")
 
-.PHONY: native install deb rpm freebsd macos clean hunter gui all
+.PHONY: native install deb rpm freebsd macos windows clean hunter gui all
 
 CC     ?= cc
 CFLAGS ?= -O2
@@ -167,6 +167,27 @@ macos:
 	pkgbuild --root $(STAGE) --identifier za.co.prometheus-systems.$(NAME) \
 	  --version $(VERSION) --install-location / $(DIST)/$(NAME)-$(VERSION).pkg
 	@echo "Built $(DIST)/$(NAME)-$(VERSION).pkg"
+
+# ---------------------------------------------------------------- Windows 10+ installer
+# Cross-compiles hunter.exe (zig cc or MinGW) and builds the NSIS setup.exe.
+# Override WINCC / MAKENSIS for other toolchains, e.g. WINCC=x86_64-w64-mingw32-gcc MAKENSIS=makensis
+WINCC ?= python3 -m ziglang cc -target x86_64-windows-gnu
+NSISDIR ?= $(HOME)/tools/nsis-3.10
+GTKWIN ?= $(HOME)/tools/gtk4-win/ucrt64
+WINE ?= flatpak run --filesystem=$(CURDIR) --filesystem=$(HOME)/tools --command=wine org.winehq.Wine
+MAKENSIS ?= $(WINE) $(NSISDIR)/makensis.exe
+
+windows:
+	install -d $(BUILD) $(DIST)
+	@test -d $(GTKWIN) || python3 packaging/windows/fetch_gtk4.py $(dir $(GTKWIN))
+	@mkdir -p $(GTKWIN)/lib-zig && for f in $(GTKWIN)/lib/*.dll.a; do b=$$(basename $$f .dll.a); ln -sf $$f $(GTKWIN)/lib-zig/$$b.a; done
+	$(WINCC) -std=c99 -O2 -o $(BUILD)/hunter.exe src/hunter.c
+	PKG_CONFIG_LIBDIR=$(GTKWIN)/lib/pkgconfig:$(GTKWIN)/share/pkgconfig sh -c \
+	  '$(WINCC) -std=gnu11 -O2 -Wno-deprecated-declarations -mwindows -o $(BUILD)/hunter-gui.exe src/gui.c \
+	   -L$(GTKWIN)/lib-zig $$(pkg-config --define-variable=prefix=$(GTKWIN) --cflags --libs gtk4)'
+	python3 packaging/windows/stage.py $(GTKWIN) $(BUILD)/win-stage $(BUILD)/hunter.exe $(BUILD)/hunter-gui.exe $(WINE)
+	cd packaging/windows && $(MAKENSIS) -DVERSION=$(VERSION) installer.nsi
+	@echo "Built $(DIST)/$(NAME)-$(VERSION)-setup.exe"
 
 clean:
 	rm -rf $(BUILD) $(DIST)
