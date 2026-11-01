@@ -67,6 +67,8 @@ static char g_tmo[32];          /* "timeout" or "gtimeout" or "" */
 static int g_is_mac, g_is_bsd, g_is_win;
 static int g_sshd_ok;           /* --sshd-ok: a running sshd is expected */
 static long g_budget;
+static int g_skip_deps;         /* --skip-deps: skip node_modules, .git, .venv, vendor in broad walks */
+static int g_skip_active;       /* set only while a broad walk is running */
 
 /* ------------------------------------------------------------ output */
 
@@ -342,6 +344,11 @@ typedef struct {
 /* Return 0 to continue, 1 to not descend into this directory, 2 to abort the walk. */
 typedef int (*walk_cb)(const Ent *e, void *ud);
 
+static int is_dep_dir(const char *n)
+{
+    return !strcmp(n, "node_modules") || !strcmp(n, ".git") || !strcmp(n, ".venv") || !strcmp(n, "vendor");
+}
+
 static int walk_rec(const char *dir, int depth, int maxd, walk_cb cb, void *ud)
 {
     char path[PATH_MAX];
@@ -365,6 +372,7 @@ static int walk_rec(const char *dir, int depth, int maxd, walk_cb cb, void *ud)
         e.size = ((long long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
         e.mtime = (time_t)(ft.QuadPart / 10000000ULL - 11644473600ULL);
         e.is_exec = !e.is_dir && ci_ends(fd.cFileName, ".exe");
+        if (g_skip_active && e.is_dir && is_dep_dir(fd.cFileName)) continue;
         {
             int r = cb(&e, ud);
             if (r == 2) { FindClose(h); return 2; }
@@ -393,6 +401,7 @@ static int walk_rec(const char *dir, int depth, int maxd, walk_cb cb, void *ud)
         e.size = (long long)st.st_size;
         e.mtime = st.st_mtime;
         e.is_exec = !e.is_dir && (st.st_mode & S_IXUSR);
+        if (g_skip_active && e.is_dir && is_dep_dir(de->d_name)) continue;
         r = cb(&e, ud);
         if (r == 2) { closedir(d); return 2; }
         if (e.is_dir && r == 0 && depth < maxd && walk_rec(path, depth + 1, maxd, cb, ud) == 2) {
@@ -410,6 +419,17 @@ static void walk(const char *dir, int maxd, walk_cb cb, void *ud)
 {
     g_budget = 400000;
     walk_rec(dir, 1, maxd, cb, ud);
+    if (g_budget < 0)
+        note("Scan of %s hit its entry limit and was cut short, results for it may be incomplete%s.", dir,
+             g_skip_deps ? "" : " (try --skip-deps)");
+}
+
+/* Walk for broad, low-risk locations (Downloads, /tmp, /opt ...). Honours --skip-deps. */
+static void walk_broad(const char *dir, int maxd, walk_cb cb, void *ud)
+{
+    g_skip_active = g_skip_deps;
+    walk(dir, maxd, cb, ud);
+    g_skip_active = 0;
 }
 
 static char *read_file(const char *path, long long maxsize, size_t *len)
@@ -541,6 +561,13 @@ static void add_existing_dir(SL *l, const char *base, const char *rel)
     char p[PATH_MAX];
     if (rel) join(p, sizeof p, base, rel); else snprintf(p, sizeof p, "%s", base);
     if (dir_exists(p)) sl_add(l, p);
+}
+
+/* Does a value point into a temp or other world-writable location, or at the known malware path? */
+static int susp_path(const char *s)
+{
+    return ci_find(s, "/tmp/") || ci_find(s, "/dev/shm") || ci_find(s, "/var/tmp") ||
+           ci_find(s, "/temp/") || ci_find(s, "\\temp\\") || ci_find(s, ".config/.smt");
 }
 
 /* ------------------------------------------------------------ section 1 helpers */
@@ -773,7 +800,7 @@ static void section1(void)
     }
     memset(&h, 0, sizeof h);
     h.max = 20;
-    for (i = 0; i < mroots.n; i++) walk(mroots.v[i], 4, cb_manual, &h);
+    for (i = 0; i < mroots.n; i++) walk_broad(mroots.v[i], 4, cb_manual, &h);
     if (h.hits.n) {
         int j;
         note("Possible AppImage/tarball/manual Cursor installs:");
@@ -832,9 +859,9 @@ static void section1(void)
         Hits v = {{0}, 10};
         for (i = 0; i < (int)(sizeof rel / sizeof rel[0]); i++) {
             join(p, sizeof p, g_home, rel[i]);
-            walk(p, 4, cb_vsix, &v);
+            walk_broad(p, 4, cb_vsix, &v);
         }
-        walk("/tmp", 4, cb_vsix, &v);
+        walk_broad("/tmp", 4, cb_vsix, &v);
         for (i = 0; i < v.hits.n; i++) {
             if (check_hash(v.hits.v[i])) continue;
             if (strstr(v.hits.v[i], BAD_VER)) warn("Malicious VSIX file: %s", v.hits.v[i]);
@@ -867,6 +894,77 @@ static int cb_keyfiles(const Ent *e, void *ud)
     return 0;
 }
 
+/* SSH client config: ProxyCommand/LocalCommand and friends can launch a helper on every outbound ssh. */
+typedef struct { const char *path; int ln; } SshCtx;
+
+static int kw_is(const char *kw, const char *w) { return strlen(kw) == strlen(w) && ci_starts(kw, w); }
+
+static void cb_sshcfg_line(const char *line, void *ud)
+{
+    SshCtx *c = ud;
+    const char *s = line, *v;
+    char kw[32];
+    size_t n;
+    c->ln++;
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s || *s == '#') return;
+    if (strstr(s, C2_IP) || strstr(s, KEY_LABEL)) {
+        warn("C2 IP or key label in SSH config %s:%d: %.200s", c->path, c->ln, s);
+        return;
+    }
+    n = strcspn(s, " \t=");
+    if (n >= sizeof kw) return;
+    memcpy(kw, s, n);
+    kw[n] = 0;
+    v = s + n;
+    while (*v == ' ' || *v == '\t' || *v == '=') v++;
+    if (kw_is(kw, "ProxyCommand") || kw_is(kw, "LocalCommand")) {
+        if (susp_path(v)) warn("%s runs a program from a temp or malware path in %s:%d: %.200s", kw, c->path, c->ln, v);
+        else if (kw_is(kw, "LocalCommand")) note("LocalCommand in %s:%d (runs after every connection): %.200s", c->path, c->ln, v);
+    } else if (kw_is(kw, "PermitLocalCommand")) {
+        if (ci_starts(v, "yes")) note("PermitLocalCommand yes in %s:%d", c->path, c->ln);
+    } else if (kw_is(kw, "Match")) {
+        if (ci_find(v, "exec ")) note("Match exec in %s:%d (runs a command per connection): %.200s", c->path, c->ln, v);
+    } else if (kw_is(kw, "ProxyJump") || kw_is(kw, "IdentityFile") || kw_is(kw, "Include") ||
+               kw_is(kw, "CertificateFile")) {
+        if (susp_path(v)) note("%s points at a temp or malware path in %s:%d: %.200s", kw, c->path, c->ln, v);
+    }
+}
+
+static void check_ssh_client_config(const SL *homes)
+{
+    SL files = {0};
+    KeyFiles cfgd = {{0}};
+    const char *pd = getenv("ProgramData");
+    char p[PATH_MAX];
+    int i, checked = 0;
+
+    for (i = 0; i < homes->n; i++) {
+        join(p, sizeof p, homes->v[i], ".ssh/config");
+        if (readable(p) && file_exists(p) && !sl_has(&files, p)) sl_add(&files, p);
+        join(p, sizeof p, homes->v[i], ".ssh/rc");
+        if (file_exists(p)) note("SSH rc script exists (runs on every incoming login), review it: %s", p);
+        if (readable(p) && file_exists(p) && !sl_has(&files, p)) sl_add(&files, p);
+    }
+    sl_add(&files, "/etc/ssh/ssh_config");
+    sl_add(&files, "/etc/ssh/sshrc");
+    walk("/etc/ssh/ssh_config.d", 1, cb_keyfiles, &cfgd);
+    for (i = 0; i < cfgd.files.n; i++) sl_add(&files, cfgd.files.v[i]);
+    if (pd) {
+        join(p, sizeof p, pd, "ssh/ssh_config");
+        sl_add(&files, p);
+    }
+    for (i = 0; i < files.n; i++) {
+        SshCtx c;
+        if (!file_exists(files.v[i]) || !readable(files.v[i])) continue;
+        c.path = files.v[i];
+        c.ln = 0;
+        checked = 1;
+        file_lines(files.v[i], cb_sshcfg_line, &c);
+    }
+    if (!checked) ok("No SSH client config files found.");
+}
+
 static void section2(void)
 {
     SL homes = {0}, files = {0};
@@ -876,7 +974,7 @@ static void section2(void)
     static const char *names[] = {".ssh/authorized_keys", ".ssh/authorized_keys2"};
     const char *pd = getenv("ProgramData");
 
-    puts("== 2. SSH authorized_keys (all readable users) ==");
+    puts("== 2. SSH authorized_keys and client config (all readable users) ==");
     list_homes(&homes);
     for (i = 0; i < homes.n; i++) {
         int j;
@@ -931,6 +1029,7 @@ static void section2(void)
         free(b);
     }
     if (!checked) ok("No authorized_keys files found.");
+    check_ssh_client_config(&homes);
     {
         static const char *dirs[] = {"/root/.ssh", "/etc/ssh/sshd_config.d"};
         for (i = 0; i < 2; i++)
@@ -1202,6 +1301,66 @@ static void col_procs(const char *line, void *ud)
         buf_line(&((Collect *)ud)->out, line);
 }
 
+#ifdef __linux__
+#define ENV_MAX (256 * 1024)
+
+static int all_digits(const char *s)
+{
+    if (!*s) return 0;
+    for (; *s; s++) if (!isdigit((unsigned char)*s)) return 0;
+    return 1;
+}
+
+/* Linux only: look for injected variables in the environment of every readable process.
+ * Only variable names are printed, never values (they often hold secrets). */
+static void check_proc_environ(void)
+{
+    DIR *d = opendir("/proc");
+    struct dirent *de;
+    char *b;
+    int scanned = 0, hits = 0;
+    if (!d) return;
+    b = malloc(ENV_MAX + 1);
+    if (!b) { closedir(d); return; }
+    while ((de = readdir(d))) {
+        char p[PATH_MAX], comm[64] = "?";
+        FILE *f;
+        size_t n, off = 0;
+        if (!all_digits(de->d_name)) continue;
+        snprintf(p, sizeof p, "/proc/%s/environ", de->d_name);
+        f = fopen(p, "rb");
+        if (!f) continue;
+        n = fread(b, 1, ENV_MAX, f);
+        fclose(f);
+        b[n] = 0;
+        scanned++;
+        snprintf(p, sizeof p, "/proc/%s/comm", de->d_name);
+        f = fopen(p, "r");
+        if (f) { if (fgets(comm, sizeof comm, f)) comm[strcspn(comm, "\n")] = 0; fclose(f); }
+        while (off < n) {
+            const char *e = b + off, *eq = strchr(e, '=');
+            size_t len = strlen(e), nl = eq ? (size_t)(eq - e) : len;
+            const char *val = eq ? eq + 1 : "";
+            if (strstr(e, C2_IP) || strstr(e, KEY_LABEL) || strstr(e, ".config/.smt")) {
+                warn("Process %s (pid %s) has %.*s referencing the C2 IP, key label or malware path.",
+                     comm, de->d_name, (int)nl, e);
+                hits = 1;
+            } else if ((nl == 10 && !strncmp(e, "LD_PRELOAD", 10)) || (nl == 12 && !strncmp(e, "NODE_OPTIONS", 12)) ||
+                       (nl == 8 && !strncmp(e, "BASH_ENV", 8)) || (nl == 3 && !strncmp(e, "ENV", 3))) {
+                if (susp_path(val)) {
+                    note("Process %s (pid %s) has %.*s pointing at a temp path.", comm, de->d_name, (int)nl, e);
+                    hits = 1;
+                }
+            }
+            off += len + 1;
+        }
+    }
+    free(b);
+    closedir(d);
+    if (!hits) ok("No injected variables in %d readable process environment(s).", scanned);
+}
+#endif
+
 static void section5(void)
 {
     Collect c = {{0}, NULL, 0, NULL};
@@ -1220,6 +1379,9 @@ static void section5(void)
         print_lines(c.out.p, 1000, 1000);
     } else ok("No suspicious ssh tunnel processes.");
     buf_free(&c.out);
+#ifdef __linux__
+    check_proc_environ();
+#endif
 }
 
 /* ------------------------------------------------------------ section 6 */
@@ -1521,9 +1683,12 @@ int main(int argc, char **argv)
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--sshd-ok")) g_sshd_ok = 1;
+        else if (!strcmp(argv[i], "--skip-deps")) g_skip_deps = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-            puts("Usage: claude-code-backdoor-hunter [--sshd-ok]\n"
-                 "  --sshd-ok   treat a running sshd as intentional (no review item)\n"
+            puts("Usage: claude-code-backdoor-hunter [--sshd-ok] [--skip-deps]\n"
+                 "  --sshd-ok     treat a running sshd as intentional (no review item)\n"
+                 "  --skip-deps   skip node_modules, .git, .venv and vendor in broad searches\n"
+                 "                (Downloads, /tmp, /opt ...). Extension folders are always scanned fully.\n"
                  "Exit codes: 0 = no indicators, 1 = indicators found, 2 = items need review.");
             return 0;
         } else {

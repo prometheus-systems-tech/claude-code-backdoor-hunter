@@ -25,13 +25,15 @@ Run with `sudo` for a complete check. Without it, root's `authorized_keys`, some
 
 If you run an SSH server on purpose, pass `--sshd-ok` to report a running `sshd` as `[ok]` instead of a `[?]` review item. In the GUI, tick "SSH server is expected to run".
 
+Pass `--skip-deps` to skip `node_modules`, `.git`, `.venv` and `vendor` during the broad searches (Downloads, `/tmp`, `/opt` and similar). Extension and log folders are always scanned in full. Each directory scan stops after 400000 entries and reports a `[?]` item if it was cut short.
+
 ## Checks
 
 1. Installed extensions and Cursor installs (packages, Flatpak, Snap, AppImage, tarball, VSIX), editor logs
-2. SSH `authorized_keys` files for all readable users
+2. SSH `authorized_keys` files for all readable users, plus SSH client config (`~/.ssh/config`, `/etc/ssh/ssh_config*`, `ssh/rc`): `ProxyCommand`/`LocalCommand` running programs from temp paths, `Match exec`, and the C2 IP
 3. Persistence: cron, systemd, autostart, shell profiles, `rc.local`, `sshd_config`
 4. Shell history
-5. Running processes (reverse SSH tunnels)
+5. Running processes (reverse SSH tunnels). On Linux, process environments are also checked for the C2 IP and for `LD_PRELOAD`, `NODE_OPTIONS`, `BASH_ENV` or `ENV` pointing at temp paths (only variable names are printed)
 6. Active network connections to the C2 IP
 7. Local SSH service and recent logins (journal, `auth.log`, `secure`)
 8. System logs for the C2 IP. Each hit is triaged: searches for the IP (`grep`, `journalctl`, this tool) and browser URL errors are ignored, sshd activity, firewall `SRC=`/`DST=` entries and tunnel command lines are flagged `[!]`, and anything else is listed for review `[?]`
